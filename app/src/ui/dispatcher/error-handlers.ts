@@ -14,6 +14,7 @@ import { UpstreamAlreadyExistsError } from '../../lib/stores/upstream-already-ex
 import { PopupType } from '../../models/popup'
 import { Repository } from '../../models/repository'
 import { getDotComAPIEndpoint } from '../../lib/api'
+import { hasWritePermission } from '../../models/github-repository'
 
 /** An error which also has a code property. */
 interface IErrorWithCode extends Error {
@@ -528,3 +529,58 @@ export async function refusedWorkflowUpdate(
 
   return null
 }
+
+/**
+ * Attempts to detect whether an error is the result of a failed push
+ * due to insufficient GitHub permissions. (No `write` access.)
+ */
+export async function insufficientGitHubRepoPermissions(
+  error: Error,
+  dispatcher: Dispatcher
+) {
+  const e = asErrorWithMetadata(error)
+  if (!e) {
+    return error
+  }
+
+  const gitError = asGitError(e.underlyingError)
+  if (!gitError) {
+    return error
+  }
+
+  const dugiteError = gitError.result.gitError
+  if (!dugiteError) {
+    return error
+  }
+
+  const { repository } = e.metadata
+
+  if (!(repository instanceof Repository)) {
+    return error
+  }
+
+  if (repository.gitHubRepository === null) {
+    return error
+  }
+
+  if (hasWritePermission(repository.gitHubRepository)) {
+    return error
+  }
+
+  if (!pushFailureErrorTypes.has(dugiteError)) {
+    return error
+  }
+
+  dispatcher.showPopup({
+    type: PopupType.PushRejectedDueToGitHubRepoPermissions,
+    repository,
+  })
+
+  return null
+}
+
+const pushFailureErrorTypes = new Set([
+  DugiteError.SSHAuthenticationFailed,
+  DugiteError.SSHPermissionDenied,
+  DugiteError.HTTPSAuthenticationFailed,
+])

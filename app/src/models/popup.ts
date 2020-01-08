@@ -53,6 +53,7 @@ export enum PopupType {
   CreateTutorialRepository,
   ConfirmExitTutorial,
   PushRejectedDueToMissingWorkflowScope,
+  PushRejectedDueToGitHubRepoPermissions,
 }
 
 export type Popup =
@@ -204,5 +205,9 @@ export type Popup =
   | {
       type: PopupType.PushRejectedDueToMissingWorkflowScope
       rejectedPath: string
+      repository: Repository
+    }
+  | {
+      type: PopupType.PushRejectedDueToGitHubRepoPermissions
       repository: Repository
     }
