@@ -11,26 +11,24 @@ import {
 } from '../../lib/app-state'
 import { Repository } from '../../models/repository'
 import { Dispatcher } from '../dispatcher'
-import { IGitHubUser } from '../../lib/databases'
 import { IssuesStore, GitHubUserStore } from '../../lib/stores'
 import { CommitIdentity } from '../../models/commit-identity'
 import { Commit, ICommitContext } from '../../models/commit'
 import { UndoCommit } from './undo-commit'
 import {
+  buildAutocompletionProviders,
   IAutocompletionProvider,
-  EmojiAutocompletionProvider,
-  IssuesAutocompletionProvider,
-  UserAutocompletionProvider,
 } from '../autocompletion'
 import { ClickSource } from '../lib/list'
 import { WorkingDirectoryFileChange } from '../../models/status'
-import { CSSTransitionGroup } from 'react-transition-group'
+import { TransitionGroup, CSSTransition } from 'react-transition-group'
 import { openFile } from '../lib/open-file'
 import { Account } from '../../models/account'
 import { PopupType } from '../../models/popup'
 import { filesNotTrackedByLFS } from '../../lib/git/lfs'
 import { getLargeFilePaths } from '../../lib/large-files'
 import { isConflictedFile, hasUnresolvedConflicts } from '../../lib/status'
+import { getAccountForRepository } from '../../lib/get-account-for-repository'
 
 /**
  * The timeout for the animation of the enter/leave animation for Undo.
@@ -46,7 +44,6 @@ interface IChangesSidebarProps {
   readonly dispatcher: Dispatcher
   readonly commitAuthor: CommitIdentity | null
   readonly branch: string | null
-  readonly gitHubUsers: Map<string, IGitHubUser>
   readonly emoji: Map<string, string>
   readonly mostRecentLocalCommit: Commit | null
   readonly issuesStore: IssuesStore
@@ -74,6 +71,8 @@ interface IChangesSidebarProps {
    * arrow pointing at the commit summary box
    */
   readonly shouldNudgeToCommit: boolean
+
+  readonly commitSpellcheckEnabled: boolean
 }
 
 export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
@@ -98,35 +97,14 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
       props.repository.hash !== this.props.repository.hash ||
       props.accounts !== this.props.accounts
     ) {
-      const autocompletionProviders: IAutocompletionProvider<any>[] = [
-        new EmojiAutocompletionProvider(props.emoji),
-      ]
-
-      // Issues autocompletion is only available for GitHub repositories.
-      const gitHubRepository = props.repository.gitHubRepository
-      if (gitHubRepository) {
-        autocompletionProviders.push(
-          new IssuesAutocompletionProvider(
-            props.issuesStore,
-            gitHubRepository,
-            props.dispatcher
-          )
-        )
-
-        const account = this.props.accounts.find(
-          a => a.endpoint === gitHubRepository.endpoint
-        )
-
-        autocompletionProviders.push(
-          new UserAutocompletionProvider(
-            props.gitHubUserStore,
-            gitHubRepository,
-            account
-          )
-        )
-      }
-
-      this.autocompletionProviders = autocompletionProviders
+      this.autocompletionProviders = buildAutocompletionProviders(
+        props.repository,
+        props.dispatcher,
+        props.emoji,
+        props.issuesStore,
+        props.gitHubUserStore,
+        props.accounts
+      )
     }
   }
 
@@ -256,6 +234,7 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
 
   /**
    * Open file with default application.
+   *
    * @param path The path of the file relative to the root of the repository
    */
   private onOpenItem = (path: string) => {
@@ -309,7 +288,7 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
   private onUndo = () => {
     const commit = this.props.mostRecentLocalCommit
 
-    if (commit) {
+    if (commit && commit.tags.length === 0) {
       this.props.dispatcher.undoCommit(this.props.repository, commit)
     }
   }
@@ -317,29 +296,28 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
   private renderMostRecentLocalCommit() {
     const commit = this.props.mostRecentLocalCommit
     let child: JSX.Element | null = null
-    if (commit) {
+
+    // We don't allow undoing commits that have tags associated to them, since then
+    // the commit won't be completely deleted because the tag will still point to it.
+    if (commit && commit.tags.length === 0) {
       child = (
-        <UndoCommit
-          isPushPullFetchInProgress={this.props.isPushPullFetchInProgress}
-          commit={commit}
-          onUndo={this.onUndo}
-          emoji={this.props.emoji}
-          isCommitting={this.props.isCommitting}
-        />
+        <CSSTransition
+          classNames="undo"
+          appear={true}
+          timeout={UndoCommitAnimationTimeout}
+        >
+          <UndoCommit
+            isPushPullFetchInProgress={this.props.isPushPullFetchInProgress}
+            commit={commit}
+            onUndo={this.onUndo}
+            emoji={this.props.emoji}
+            isCommitting={this.props.isCommitting}
+          />
+        </CSSTransition>
       )
     }
 
-    return (
-      <CSSTransitionGroup
-        transitionName="undo"
-        transitionAppear={true}
-        transitionAppearTimeout={UndoCommitAnimationTimeout}
-        transitionEnterTimeout={UndoCommitAnimationTimeout}
-        transitionLeaveTimeout={UndoCommitAnimationTimeout}
-      >
-        {child}
-      </CSSTransitionGroup>
-    )
+    return <TransitionGroup>{child}</TransitionGroup>
   }
 
   private renderUndoCommit = (
@@ -362,17 +340,6 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
       selection,
       currentBranchProtected,
     } = this.props.changes
-
-    // TODO: I think user will expect the avatar to match that which
-    // they have configured in GitHub.com as well as GHE so when we add
-    // support for GHE we should revisit this and try to update the logic
-    // to look up based on email _and_ host.
-    const email = this.props.commitAuthor ? this.props.commitAuthor.email : null
-    let user: IGitHubUser | null = null
-    if (email) {
-      user = this.props.gitHubUsers.get(email.toLowerCase()) || null
-    }
-
     let rebaseConflictState: RebaseConflictState | null = null
     if (conflictState !== null) {
       rebaseConflictState = isRebaseConflictState(conflictState)
@@ -386,13 +353,19 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
         : []
 
     const isShowingStashEntry = selection.kind === ChangesSelectionKind.Stash
+    const repositoryAccount = getAccountForRepository(
+      this.props.accounts,
+      this.props.repository
+    )
 
     return (
       <div className="panel">
         <ChangesList
           dispatcher={this.props.dispatcher}
           repository={this.props.repository}
+          repositoryAccount={repositoryAccount}
           workingDirectory={workingDirectory}
+          conflictState={conflictState}
           rebaseConflictState={rebaseConflictState}
           selectedFileIDs={selectedFileIDs}
           onFileSelectionChanged={this.onFileSelectionChanged}
@@ -408,7 +381,6 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           onRowClick={this.onChangedItemClick}
           commitAuthor={this.props.commitAuthor}
           branch={this.props.branch}
-          gitHubUser={user}
           commitMessage={commitMessage}
           focusCommitMessage={this.props.focusCommitMessage}
           autocompletionProviders={this.autocompletionProviders!}
@@ -425,6 +397,7 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           isShowingStashEntry={isShowingStashEntry}
           currentBranchProtected={currentBranchProtected}
           shouldNudgeToCommit={this.props.shouldNudgeToCommit}
+          commitSpellcheckEnabled={this.props.commitSpellcheckEnabled}
         />
         {this.renderUndoCommit(rebaseConflictState)}
       </div>

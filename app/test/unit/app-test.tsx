@@ -29,6 +29,7 @@ import { TestActivityMonitor } from '../helpers/test-activity-monitor'
 import { RepositoryStateCache } from '../../src/lib/stores/repository-state-cache'
 import { ApiRepositoriesStore } from '../../src/lib/stores/api-repositories-store'
 import { CommitStatusStore } from '../../src/lib/stores/commit-status-store'
+import { AheadBehindStore } from '../../src/lib/stores/ahead-behind-store'
 
 describe('App', () => {
   let appStore: AppStore
@@ -37,6 +38,7 @@ describe('App', () => {
   let repositoryStateManager: RepositoryStateCache
   let githubUserStore: GitHubUserStore
   let issuesStore: IssuesStore
+  let aheadBehindStore: AheadBehindStore
 
   beforeEach(async () => {
     const db = new TestGitHubUserDatabase()
@@ -66,12 +68,11 @@ describe('App', () => {
     githubUserStore = new GitHubUserStore(db)
     issuesStore = new IssuesStore(issuesDb)
 
-    repositoryStateManager = new RepositoryStateCache(repo =>
-      githubUserStore.getUsersForRepository(repo)
-    )
+    repositoryStateManager = new RepositoryStateCache()
 
     const apiRepositoriesStore = new ApiRepositoriesStore(accountsStore)
     const commitStatusStore = new CommitStatusStore(accountsStore)
+    aheadBehindStore = new AheadBehindStore()
 
     appStore = new AppStore(
       githubUserStore,
@@ -95,16 +96,17 @@ describe('App', () => {
   })
 
   it('renders', async () => {
-    const app = TestUtils.renderIntoDocument(
+    const app = (TestUtils.renderIntoDocument(
       <App
         dispatcher={dispatcher}
         appStore={appStore}
         repositoryStateManager={repositoryStateManager}
         issuesStore={issuesStore}
         gitHubUserStore={githubUserStore}
+        aheadBehindStore={aheadBehindStore}
         startTime={0}
       />
-    ) as React.Component<any, any>
+    ) as unknown) as React.Component<any, any>
     // Give any promises a tick to resolve.
     await wait(0)
 

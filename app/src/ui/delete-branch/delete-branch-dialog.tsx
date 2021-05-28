@@ -62,7 +62,7 @@ export class DeleteBranch extends React.Component<
   }
 
   private renderDeleteOnRemote() {
-    if (this.props.branch.remote && this.props.existsOnRemote) {
+    if (this.props.branch.upstreamRemoteName && this.props.existsOnRemote) {
       return (
         <div>
           <p>
@@ -100,13 +100,13 @@ export class DeleteBranch extends React.Component<
 
     this.setState({ isDeleting: true })
 
-    await dispatcher.deleteBranch(
+    await dispatcher.deleteLocalBranch(
       repository,
       branch,
       this.state.includeRemoteBranch
     )
     this.props.onDeleted(repository)
 
-    await dispatcher.closePopup()
+    this.props.onDismissed()
   }
 }

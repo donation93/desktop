@@ -5,10 +5,7 @@ import { Dispatcher } from '../dispatcher'
 import { VerticalSegmentedControl } from '../lib/vertical-segmented-control'
 import { Row } from '../lib/row'
 import { Branch } from '../../models/branch'
-import {
-  UncommittedChangesStrategyKind,
-  stashOnCurrentBranch,
-} from '../../models/uncommitted-changes-strategy'
+import { UncommittedChangesStrategy } from '../../models/uncommitted-changes-strategy'
 import { Octicon, OcticonSymbol } from '../octicons'
 import { PopupType } from '../../models/popup'
 import { startTimer } from '../lib/timing'
@@ -103,10 +100,12 @@ export class StashAndSwitchBranch extends React.Component<
         title: `Leave my changes on ${this.state.currentBranchName}`,
         description:
           'Your in-progress work will be stashed on this branch for you to return to later',
+        key: StashAction.StashOnCurrentBranch,
       },
       {
         title: `Bring my changes to ${branchToCheckout.name}`,
         description: 'Your in-progress work will follow you to the new branch',
+        key: StashAction.MoveToNewBranch,
       },
     ]
 
@@ -115,7 +114,7 @@ export class StashAndSwitchBranch extends React.Component<
         <VerticalSegmentedControl
           label="You have changes on this branch. What would you like to do with them?"
           items={items}
-          selectedIndex={this.state.selectedStashAction}
+          selectedKey={this.state.selectedStashAction}
           onSelectionChanged={this.onSelectionChanged}
         />
       </Row>
@@ -155,14 +154,15 @@ export class StashAndSwitchBranch extends React.Component<
         await dispatcher.checkoutBranch(
           repository,
           branchToCheckout,
-          stashOnCurrentBranch
+          UncommittedChangesStrategy.StashOnCurrentBranch
         )
       } else if (selectedStashAction === StashAction.MoveToNewBranch) {
         // attempt to checkout the branch without creating a stash entry
-        await dispatcher.checkoutBranch(repository, branchToCheckout, {
-          kind: UncommittedChangesStrategyKind.MoveToNewBranch,
-          transientStashEntry: null,
-        })
+        await dispatcher.checkoutBranch(
+          repository,
+          branchToCheckout,
+          UncommittedChangesStrategy.MoveToNewBranch
+        )
       }
     } finally {
       timer.done()

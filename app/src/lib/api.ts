@@ -11,10 +11,17 @@ import {
 } from './http'
 import { AuthenticationMode } from './2fa'
 import { uuid } from './uuid'
-import { getAvatarWithEnterpriseFallback } from './gravatar'
-import { getDefaultEmail } from './email'
+import username from 'username'
+import { GitProtocol } from './remote-parsing'
 
 const envEndpoint = process.env['DESKTOP_GITHUB_DOTCOM_API_ENDPOINT']
+const envHTMLURL = process.env['DESKTOP_GITHUB_DOTCOM_HTML_URL']
+const envAdditionalCookies =
+  process.env['DESKTOP_GITHUB_DOTCOM_ADDITIONAL_COOKIES']
+
+if (envAdditionalCookies !== undefined) {
+  document.cookie += '; ' + envAdditionalCookies
+}
 
 /**
  * Optional set of configurable settings for the fetchAll method
@@ -60,8 +67,6 @@ interface IFetchAllOptions<T> {
   suppressErrors?: boolean
 }
 
-const username: () => Promise<string> = require('username')
-
 const ClientID = process.env.TEST_ENV ? '' : __OAUTH_CLIENT_ID__
 const ClientSecret = process.env.TEST_ENV ? '' : __OAUTH_SECRET__
 
@@ -78,7 +83,7 @@ const DotComOAuthScopes = ['repo', 'user', 'workflow']
 
 /**
  * The OAuth scopes we want to request from GitHub
- * Enterprise Server.
+ * Enterprise.
  */
 const EnterpriseOAuthScopes = ['repo', 'user']
 
@@ -103,7 +108,37 @@ export interface IAPIRepository {
   readonly fork: boolean
   readonly default_branch: string
   readonly pushed_at: string
-  readonly parent?: IAPIRepository
+  readonly has_issues: boolean
+  readonly archived: boolean
+}
+
+/** Information needed to clone a repository. */
+export interface IAPIRepositoryCloneInfo {
+  /** Canonical clone URL of the repository. */
+  readonly url: string
+
+  /**
+   * Default branch of the repository, if any. This is usually either retrieved
+   * from the API for GitHub repositories, or undefined for other repositories.
+   */
+  readonly defaultBranch?: string
+}
+
+export interface IAPIFullRepository extends IAPIRepository {
+  /**
+   * The parent repository of a fork.
+   *
+   * HACK: BEWARE: This is defined as `parent: IAPIRepository | undefined`
+   * rather than `parent?: ...` even though the parent property is actually
+   * optional in the API response. So we're lying a bit to the type system
+   * here saying that this will be present but the only time the difference
+   * between omission and explicit undefined matters is when using constructs
+   * like `x in y` or `y.hasOwnProperty('x')` which we do very rarely.
+   *
+   * Without at least one non-optional type in this interface TypeScript will
+   * happily let us pass an IAPIRepository in place of an IAPIFullRepository.
+   */
+  readonly parent: IAPIRepository | undefined
 
   /**
    * The high-level permissions that the currently authenticated
@@ -196,17 +231,29 @@ interface IAPIFullIdentity {
 
 /** The users we get from the mentionables endpoint. */
 export interface IAPIMentionableUser {
+  /**
+   * A url to an avatar image chosen by the user
+   */
   readonly avatar_url: string
 
   /**
-   * Note that this may be an empty string *or* null in the case where the user
-   * has no public email address.
+   * The user's attributable email address or null if the
+   * user doesn't have an email address that they can be
+   * attributed by
    */
   readonly email: string | null
 
+  /**
+   * The username or "handle" of the user
+   */
   readonly login: string
 
-  readonly name: string
+  /**
+   * The user's real name (or at least the name that the user
+   * has configured to be shown) or null if the user hasn't provided
+   * a real name for their public profile.
+   */
+  readonly name: string | null
 }
 
 /**
@@ -241,7 +288,21 @@ export interface IAPIIssue {
 }
 
 /** The combined state of a ref. */
-export type APIRefState = 'failure' | 'pending' | 'success'
+export type APIRefState = 'failure' | 'pending' | 'success' | 'error'
+
+/** The overall status of a check run */
+export type APICheckStatus = 'queued' | 'in_progress' | 'completed'
+
+/** The conclusion of a completed check run */
+export type APICheckConclusion =
+  | 'action_required'
+  | 'cancelled'
+  | 'timed_out'
+  | 'failure'
+  | 'neutral'
+  | 'success'
+  | 'skipped'
+  | 'stale'
 
 /**
  * The API response for a combined view of a commit
@@ -260,6 +321,30 @@ export interface IAPIRefStatus {
   readonly state: APIRefState
   readonly total_count: number
   readonly statuses: ReadonlyArray<IAPIRefStatusItem>
+}
+
+export interface IAPIRefCheckRun {
+  readonly id: number
+  readonly url: string
+  readonly status: APICheckStatus
+  readonly conclusion: APICheckConclusion | null
+  readonly name: string
+  readonly output: IAPIRefCheckRunOutput
+  readonly check_suite: IAPIRefCheckRunCheckSuite
+}
+
+// NB. Only partially mapped
+export interface IAPIRefCheckRunOutput {
+  readonly title: string | null
+}
+
+export interface IAPIRefCheckRunCheckSuite {
+  readonly id: number
+}
+
+export interface IAPIRefCheckRuns {
+  readonly total_count: number
+  readonly check_runs: IAPIRefCheckRun[]
 }
 
 /** Protected branch information returned by the GitHub API */
@@ -303,7 +388,7 @@ export interface IAPIBranch {
   /**
    * The name of the branch stored on the remote.
    *
-   * NOTE: this is NOT a fully-qualified ref (i.e. `refs/heads/master`)
+   * NOTE: this is NOT a fully-qualified ref (i.e. `refs/heads/main`)
    */
   readonly name: string
   /**
@@ -336,6 +421,7 @@ export interface IAPIPullRequest {
   readonly head: IAPIPullRequestRef
   readonly base: IAPIPullRequestRef
   readonly state: 'open' | 'closed'
+  readonly draft?: boolean
 }
 
 /** The metadata about a GitHub server. */
@@ -361,13 +447,8 @@ interface IAPIAuthorization {
 
 /** The response we receive from fetching mentionables. */
 interface IAPIMentionablesResponse {
-  readonly etag: string | null
+  readonly etag: string | undefined
   readonly users: ReadonlyArray<IAPIMentionableUser>
-}
-
-/** The response for search results. */
-interface ISearchResults<T> {
-  readonly items: ReadonlyArray<T>
 }
 
 /**
@@ -495,13 +576,13 @@ function toGitHubIsoDateString(date: Date) {
  * An object for making authenticated requests to the GitHub API
  */
 export class API {
-  private endpoint: string
-  private token: string
-
   /** Create a new API client from the given account. */
   public static fromAccount(account: Account): API {
     return new API(account.endpoint, account.token)
   }
+
+  private endpoint: string
+  private token: string
 
   /** Create a new API client for the endpoint, authenticated with the token. */
   public constructor(endpoint: string, token: string) {
@@ -513,17 +594,55 @@ export class API {
   public async fetchRepository(
     owner: string,
     name: string
-  ): Promise<IAPIRepository | null> {
+  ): Promise<IAPIFullRepository | null> {
     try {
       const response = await this.request('GET', `repos/${owner}/${name}`)
       if (response.status === HttpStatusCode.NotFound) {
         log.warn(`fetchRepository: '${owner}/${name}' returned a 404`)
         return null
       }
-      return await parsedResponse<IAPIRepository>(response)
+      return await parsedResponse<IAPIFullRepository>(response)
     } catch (e) {
       log.warn(`fetchRepository: an error occurred for '${owner}/${name}'`, e)
       return null
+    }
+  }
+
+  /**
+   * Fetch info needed to clone a repository. That includes:
+   *  - The canonical clone URL for a repository, respecting the protocol
+   *    preference if provided.
+   *  - The default branch of the repository, in case the repository is empty.
+   *    Only available for GitHub repositories.
+   *
+   * Returns null if the request returned a 404 (NotFound). NotFound doesn't
+   * necessarily mean that the repository doesn't exist, it could exist and
+   * the current user just doesn't have the permissions to see it. GitHub.com
+   * doesn't differentiate between not found and permission denied for private
+   * repositories as that would leak the existence of a private repository.
+   *
+   * Note that unlike `fetchRepository` this method will throw for all errors
+   * except 404 NotFound responses.
+   *
+   * @param owner    The repository owner (nodejs in https://github.com/nodejs/node)
+   * @param name     The repository name (node in https://github.com/nodejs/node)
+   * @param protocol The preferred Git protocol (https or ssh)
+   */
+  public async fetchRepositoryCloneInfo(
+    owner: string,
+    name: string,
+    protocol: GitProtocol | undefined
+  ): Promise<IAPIRepositoryCloneInfo | null> {
+    const response = await this.request('GET', `repos/${owner}/${name}`)
+
+    if (response.status === HttpStatusCode.NotFound) {
+      return null
+    }
+
+    const repo = await parsedResponse<IAPIRepository>(response)
+    return {
+      url: protocol === 'ssh' ? repo.ssh_url : repo.clone_url,
+      defaultBranch: repo.default_branch,
     }
   }
 
@@ -532,7 +651,16 @@ export class API {
     IAPIRepository
   > | null> {
     try {
-      return await this.fetchAll<IAPIRepository>('user/repos')
+      const repositories = await this.fetchAll<IAPIRepository>('user/repos')
+      // "But wait, repositories can't have a null owner" you say.
+      // Ordinarily you'd be correct but turns out there's super
+      // rare circumstances where a user has been deleted but the
+      // repository hasn't. Such cases are usually addressed swiftly
+      // but in some cases like GitHub Enterprise instances
+      // they can linger for longer than we'd like so we'll make
+      // sure to exclude any such dangling repository, chances are
+      // they won't be cloneable anyway.
+      return repositories.filter(x => x.owner !== null)
     } catch (error) {
       log.warn(`fetchRepositories: ${error}`)
       return null
@@ -564,55 +692,6 @@ export class API {
     }
   }
 
-  /** Fetch a commit from the repository. */
-  public async fetchCommit(
-    owner: string,
-    name: string,
-    sha: string
-  ): Promise<IAPICommit | null> {
-    try {
-      const path = `repos/${owner}/${name}/commits/${sha}`
-      const response = await this.request('GET', path)
-      if (response.status === HttpStatusCode.NotFound) {
-        log.warn(`fetchCommit: '${path}' returned a 404`)
-        return null
-      }
-      return await parsedResponse<IAPICommit>(response)
-    } catch (e) {
-      log.warn(`fetchCommit: returned an error '${owner}/${name}@${sha}'`, e)
-      return null
-    }
-  }
-
-  /** Search for a user with the given public email. */
-  public async searchForUserWithEmail(
-    email: string
-  ): Promise<IAPIIdentity | null> {
-    if (email.length === 0) {
-      return null
-    }
-
-    try {
-      const params = { q: `${email} in:email type:user` }
-      const url = urlWithQueryString('search/users', params)
-      const response = await this.request('GET', url)
-      const result = await parsedResponse<ISearchResults<IAPIIdentity>>(
-        response
-      )
-      const items = result.items
-      if (items.length) {
-        // The results are sorted by score, best to worst. So the first result
-        // is our best match.
-        return items[0]
-      } else {
-        return null
-      }
-    } catch (e) {
-      log.warn(`searchForUserWithEmail: not found '${email}'`, e)
-      return null
-    }
-  }
-
   /** Fetch all the orgs to which the user belongs. */
   public async fetchOrgs(): Promise<ReadonlyArray<IAPIOrganization>> {
     try {
@@ -629,7 +708,7 @@ export class API {
     name: string,
     description: string,
     private_: boolean
-  ): Promise<IAPIRepository> {
+  ): Promise<IAPIFullRepository> {
     try {
       const apiPath = org ? `orgs/${org.login}/repos` : 'user/repos'
       const response = await this.request('POST', apiPath, {
@@ -638,14 +717,12 @@ export class API {
         private: private_,
       })
 
-      return await parsedResponse<IAPIRepository>(response)
+      return await parsedResponse<IAPIFullRepository>(response)
     } catch (e) {
       if (e instanceof APIError) {
         if (org !== null) {
           throw new Error(
-            `Unable to create repository for organization '${
-              org.login
-            }'. Verify that it exists, that it's a paid organization, and that you have permission to create a repository there.`
+            `Unable to create repository for organization '${org.login}'. Verify that the repository does not already exist and that you have permission to create a repository there.`
           )
         }
         throw e
@@ -655,6 +732,24 @@ export class API {
       throw new Error(
         `Unable to publish repository. Please check if you have an internet connection and try again.`
       )
+    }
+  }
+
+  /** Create a new GitHub fork of this repository (owner and name) */
+  public async forkRepository(
+    owner: string,
+    name: string
+  ): Promise<IAPIFullRepository> {
+    try {
+      const apiPath = `/repos/${owner}/${name}/forks`
+      const response = await this.request('POST', apiPath)
+      return await parsedResponse<IAPIFullRepository>(response)
+    } catch (e) {
+      log.error(
+        `forkRepository: failed to fork ${owner}/${name} at endpoint: ${this.endpoint}`,
+        e
+      )
+      throw e
     }
   }
 
@@ -770,19 +865,67 @@ export class API {
   }
 
   /**
+   * Fetch a single pull request in the given repository
+   */
+  public async fetchPullRequest(owner: string, name: string, prNumber: string) {
+    try {
+      const path = `/repos/${owner}/${name}/pulls/${prNumber}`
+      const response = await this.request('GET', path)
+      return await parsedResponse<IAPIPullRequest>(response)
+    } catch (e) {
+      log.warn(`failed fetching PR for ${owner}/${name}/pulls/${prNumber}`, e)
+      throw e
+    }
+  }
+
+  /**
    * Get the combined status for the given ref.
-   *
-   * Note: Contrary to many other methods in this class this will not
-   * suppress or log errors, callers must ensure that they handle errors.
    */
   public async fetchCombinedRefStatus(
     owner: string,
     name: string,
     ref: string
-  ): Promise<IAPIRefStatus> {
-    const path = `repos/${owner}/${name}/commits/${ref}/status`
+  ): Promise<IAPIRefStatus | null> {
+    const safeRef = encodeURIComponent(ref)
+    const path = `repos/${owner}/${name}/commits/${safeRef}/status?per_page=100`
     const response = await this.request('GET', path)
-    return await parsedResponse<IAPIRefStatus>(response)
+
+    try {
+      return await parsedResponse<IAPIRefStatus>(response)
+    } catch (err) {
+      log.debug(
+        `Failed fetching check runs for ref ${ref} (${owner}/${name})`,
+        err
+      )
+      return null
+    }
+  }
+
+  /**
+   * Get any check run results for the given ref.
+   */
+  public async fetchRefCheckRuns(
+    owner: string,
+    name: string,
+    ref: string
+  ): Promise<IAPIRefCheckRuns | null> {
+    const safeRef = encodeURIComponent(ref)
+    const path = `repos/${owner}/${name}/commits/${safeRef}/check-runs?per_page=100`
+    const headers = {
+      Accept: 'application/vnd.github.antiope-preview+json',
+    }
+
+    const response = await this.request('GET', path, undefined, headers)
+
+    try {
+      return await parsedResponse<IAPIRefCheckRuns>(response)
+    } catch (err) {
+      log.debug(
+        `Failed fetching check runs for ref ${ref} (${owner}/${name})`,
+        err
+      )
+      return null
+    }
   }
 
   /**
@@ -795,7 +938,9 @@ export class API {
     name: string,
     branch: string
   ): Promise<IAPIPushControl> {
-    const path = `repos/${owner}/${name}/branches/${branch}/push_control`
+    const path = `repos/${owner}/${name}/branches/${encodeURIComponent(
+      branch
+    )}/push_control`
 
     const headers: any = {
       Accept: 'application/vnd.github.phandalin-preview',
@@ -909,14 +1054,14 @@ export class API {
   public async fetchMentionables(
     owner: string,
     name: string,
-    etag: string | null
+    etag: string | undefined
   ): Promise<IAPIMentionablesResponse | null> {
     // NB: this custom `Accept` is required for the `mentionables` endpoint.
     const headers: any = {
       Accept: 'application/vnd.github.jerry-maguire-preview',
     }
 
-    if (etag) {
+    if (etag !== undefined) {
       headers['If-None-Match'] = etag
     }
 
@@ -935,7 +1080,7 @@ export class API {
       const users = await parsedResponse<ReadonlyArray<IAPIMentionableUser>>(
         response
       )
-      const etag = response.headers.get('etag')
+      const etag = response.headers.get('etag') || undefined
       return { users, etag }
     } catch (e) {
       log.warn(`fetchMentionables: failed for ${owner}/${name}`, e)
@@ -1108,18 +1253,13 @@ export async function fetchUser(
   try {
     const user = await api.fetchAccount()
     const emails = await api.fetchEmails()
-    const defaultEmail = getDefaultEmail(emails)
-    const avatarURL = getAvatarWithEnterpriseFallback(
-      user.avatar_url,
-      defaultEmail,
-      endpoint
-    )
+
     return new Account(
       user.login,
       endpoint,
       token,
       emails,
-      avatarURL,
+      user.avatar_url,
       user.id,
       user.name || user.login
     )
@@ -1192,10 +1332,14 @@ export function getEndpointForRepository(url: string): string {
  * http://github.mycompany.com/api -> http://github.mycompany.com/
  */
 export function getHTMLURL(endpoint: string): string {
+  if (envHTMLURL !== undefined) {
+    return envHTMLURL
+  }
+
   // In the case of GitHub.com, the HTML site lives on the parent domain.
   //  E.g., https://api.github.com -> https://github.com
   //
-  // Whereas with Enterprise Server, it lives on the same domain but without the
+  // Whereas with Enterprise, it lives on the same domain but without the
   // API path:
   //  E.g., https://github.mycompany.com/api/v3 -> https://github.mycompany.com
   //

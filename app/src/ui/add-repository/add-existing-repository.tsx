@@ -14,7 +14,7 @@ import { LinkButton } from '../lib/link-button'
 import { PopupType } from '../../models/popup'
 import { OkCancelButtonGroup } from '../dialog/ok-cancel-button-group'
 
-import untildify = require('untildify')
+import untildify from 'untildify'
 
 interface IAddExistingRepositoryProps {
   readonly dispatcher: Dispatcher
@@ -172,14 +172,14 @@ export class AddExistingRepository extends React.Component<
 
   private showFilePicker = async () => {
     const window = remote.getCurrentWindow()
-    const directory = remote.dialog.showOpenDialog(window, {
+    const { filePaths } = await remote.dialog.showOpenDialog(window, {
       properties: ['createDirectory', 'openDirectory'],
     })
-    if (directory === undefined) {
+    if (filePaths.length === 0) {
       return
     }
 
-    const path = directory[0]
+    const path = filePaths[0]
     const isRepository = await isGitRepository(path)
     const isRepositoryBare = await isBareRepository(path)
 
@@ -197,16 +197,14 @@ export class AddExistingRepository extends React.Component<
 
   private addRepository = async () => {
     this.props.onDismissed()
+    const { dispatcher } = this.props
 
     const resolvedPath = this.resolvedPath(this.state.path)
-    const repositories = await this.props.dispatcher.addRepositories([
-      resolvedPath,
-    ])
+    const repositories = await dispatcher.addRepositories([resolvedPath])
 
-    if (repositories && repositories.length) {
-      const repository = repositories[0]
-      this.props.dispatcher.selectRepository(repository)
-      this.props.dispatcher.recordAddExistingRepository()
+    if (repositories.length > 0) {
+      dispatcher.selectRepository(repositories[0])
+      dispatcher.recordAddExistingRepository()
     }
   }
 

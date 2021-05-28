@@ -1,53 +1,40 @@
 import { remote } from 'electron'
-import { ApplicationTheme } from './application-theme'
+import {
+  ApplicableTheme,
+  getCurrentlyAppliedTheme,
+  supportsSystemThemeChanges,
+} from './application-theme'
 import { IDisposable, Disposable, Emitter } from 'event-kit'
-import { supportsDarkMode, isDarkModeEnabled } from './dark-theme'
 
 class ThemeChangeMonitor implements IDisposable {
   private readonly emitter = new Emitter()
-
-  private subscriptionID: number | null = null
 
   public constructor() {
     this.subscribe()
   }
 
   public dispose() {
-    this.unsubscribe()
+    remote.nativeTheme.removeAllListeners()
   }
 
   private subscribe = () => {
-    if (!supportsDarkMode()) {
+    if (!supportsSystemThemeChanges()) {
       return
     }
 
-    this.subscriptionID = remote.systemPreferences.subscribeNotification(
-      'AppleInterfaceThemeChangedNotification',
-      this.onThemeNotificationFromOS
-    )
+    remote.nativeTheme.addListener('updated', this.onThemeNotificationUpdated)
   }
 
-  private onThemeNotificationFromOS = (event: string, userInfo: any) => {
-    const darkModeEnabled = isDarkModeEnabled()
-
-    const theme = darkModeEnabled
-      ? ApplicationTheme.Dark
-      : ApplicationTheme.Light
+  private onThemeNotificationUpdated = (event: string, userInfo: any) => {
+    const theme = getCurrentlyAppliedTheme()
     this.emitThemeChanged(theme)
   }
 
-  private unsubscribe = () => {
-    if (this.subscriptionID !== null) {
-      remote.systemPreferences.unsubscribeNotification(this.subscriptionID)
-      this.subscriptionID = null
-    }
-  }
-
-  public onThemeChanged(fn: (theme: ApplicationTheme) => void): Disposable {
+  public onThemeChanged(fn: (theme: ApplicableTheme) => void): Disposable {
     return this.emitter.on('theme-changed', fn)
   }
 
-  private emitThemeChanged(theme: ApplicationTheme) {
+  private emitThemeChanged(theme: ApplicableTheme) {
     this.emitter.emit('theme-changed', theme)
   }
 }

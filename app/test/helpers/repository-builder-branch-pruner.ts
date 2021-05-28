@@ -3,9 +3,14 @@ import { makeCommit, switchTo } from './repository-scaffolding'
 import { GitProcess } from 'dugite'
 import { RepositoriesStore, GitStore } from '../../src/lib/stores'
 import { RepositoryStateCache } from '../../src/lib/stores/repository-state-cache'
-import { Repository } from '../../src/models/repository'
-import { IAPIRepository } from '../../src/lib/api'
+import {
+  Repository,
+  isRepositoryWithGitHubRepository,
+} from '../../src/models/repository'
+import { IAPIFullRepository, getDotComAPIEndpoint } from '../../src/lib/api'
 import { shell } from './test-app-shell'
+import { StatsStore, StatsDatabase } from '../../src/lib/stats'
+import { UiActivityMonitor } from '../../src/ui/lib/ui-activity-monitor'
 
 export async function createRepository() {
   const repo = await setupEmptyRepository()
@@ -65,7 +70,7 @@ export async function setupRepository(
 ) {
   let repository = await repositoriesStore.addRepository(path)
   if (includesGhRepo) {
-    const ghAPIResult: IAPIRepository = {
+    const apiRepo: IAPIFullRepository = {
       clone_url: 'string',
       ssh_url: 'string',
       html_url: 'string',
@@ -81,22 +86,25 @@ export async function setupRepository(
       fork: false,
       default_branch: defaultBranchName,
       pushed_at: 'string',
+      has_issues: true,
+      archived: false,
       permissions: {
         pull: true,
         push: true,
         admin: false,
       },
+      parent: undefined,
     }
 
-    repository = await repositoriesStore.updateGitHubRepository(
+    const endpoint = getDotComAPIEndpoint()
+    repository = await repositoriesStore.setGitHubRepository(
       repository,
-      '',
-      ghAPIResult
+      await repositoriesStore.upsertGitHubRepository(endpoint, apiRepo)
     )
   }
   await primeCaches(repository, repositoriesStateCache)
 
-  if (lastPruneDate) {
+  if (lastPruneDate && isRepositoryWithGitHubRepository(repository)) {
     repositoriesStore.updateLastPruneDate(repository, lastPruneDate.getTime())
   }
 
@@ -111,7 +119,14 @@ async function primeCaches(
   repository: Repository,
   repositoriesStateCache: RepositoryStateCache
 ) {
-  const gitStore = new GitStore(repository, shell)
+  const gitStore = new GitStore(
+    repository,
+    shell,
+    new StatsStore(
+      new StatsDatabase('test-StatsDatabase'),
+      new UiActivityMonitor()
+    )
+  )
 
   // rather than re-create the branches and stuff as objects, these calls
   // will run the underlying Git operations and update the GitStore state

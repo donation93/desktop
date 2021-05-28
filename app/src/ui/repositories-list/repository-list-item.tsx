@@ -1,4 +1,6 @@
 import * as React from 'react'
+import { clipboard } from 'electron'
+
 import { Repository } from '../../models/repository'
 import { Octicon, iconForRepository, OcticonSymbol } from '../octicons'
 import { showContextualMenu } from '../main-process-proxy'
@@ -11,7 +13,8 @@ import {
   RevealInFileManagerLabel,
   DefaultEditorLabel,
 } from '../lib/context-menu'
-import { enableGroupRepositoriesByOwner } from '../../lib/feature-flag'
+import { enableRepositoryAliases } from '../../lib/feature-flag'
+import classNames from 'classnames'
 
 interface IRepositoryListItemProps {
   readonly repository: Repositoryish
@@ -31,6 +34,12 @@ interface IRepositoryListItemProps {
   /** Called when the repository should be opened in an external editor */
   readonly onOpenInExternalEditor: (repository: Repositoryish) => void
 
+  /** Called when the repository alias should be changed */
+  readonly onChangeRepositoryAlias: (repository: Repository) => void
+
+  /** Called when the repository alias should be removed */
+  readonly onRemoveRepositoryAlias: (repository: Repository) => void
+
   /** The current external editor selected by the user */
   readonly externalEditorLabel?: string
 
@@ -43,7 +52,7 @@ interface IRepositoryListItemProps {
   /** The characters in the repository name to highlight */
   readonly matches: IMatches
 
-  /** Number of commits this local repo branch is behind or ahead of its remote brance */
+  /** Number of commits this local repo branch is behind or ahead of its remote branch */
   readonly aheadBehind: IAheadBehind | null
 
   /** Number of uncommitted changes */
@@ -62,50 +71,43 @@ export class RepositoryListItem extends React.Component<
       repository instanceof Repository ? repository.gitHubRepository : null
     const hasChanges = this.props.changedFilesCount > 0
 
-    const repoTooltip = gitHubRepo
-      ? gitHubRepo.fullName + '\n' + gitHubRepo.htmlURL + '\n' + path
-      : path
+    const alias: string | null =
+      repository instanceof Repository ? repository.alias : null
+
+    const repoTooltipComponents = gitHubRepo
+      ? [gitHubRepo.fullName, gitHubRepo.htmlURL, path]
+      : [path]
+
+    if (alias !== null) {
+      repoTooltipComponents.unshift(alias)
+    }
+
+    const repoTooltip = repoTooltipComponents.join('\n')
 
     let prefix: string | null = null
     if (this.props.needsDisambiguation && gitHubRepo) {
       prefix = `${gitHubRepo.owner.login}/`
     }
 
-    const className = enableGroupRepositoriesByOwner()
-      ? 'repository-list-item group-repositories-by-owner'
-      : 'repository-list-item'
+    const classNameList = classNames('name', {
+      alias: alias !== null,
+    })
 
     return (
       <div
         onContextMenu={this.onContextMenu}
-        className={className}
+        className="repository-list-item"
         title={repoTooltip}
       >
-        {!enableGroupRepositoriesByOwner() && (
-          <div
-            className="change-indicator-wrapper"
-            title={
-              hasChanges
-                ? 'There are uncommitted changes in this repository'
-                : ''
-            }
-          >
-            {hasChanges ? (
-              <Octicon
-                className="change-indicator"
-                symbol={OcticonSymbol.primitiveDot}
-              />
-            ) : null}
-          </div>
-        )}
         <Octicon
           className="icon-for-repository"
           symbol={iconForRepository(repository)}
         />
-        <div className="name">
+
+        <div className={classNames(classNameList)}>
           {prefix ? <span className="prefix">{prefix}</span> : null}
           <HighlightText
-            text={repository.name}
+            text={alias ?? repository.name}
             highlight={this.props.matches.title}
           />
         </div>
@@ -113,7 +115,7 @@ export class RepositoryListItem extends React.Component<
         {repository instanceof Repository &&
           renderRepoIndicators({
             aheadBehind: this.props.aheadBehind,
-            hasChanges: enableGroupRepositoriesByOwner() && hasChanges,
+            hasChanges: hasChanges,
           })}
       </div>
     )
@@ -143,6 +145,12 @@ export class RepositoryListItem extends React.Component<
       : DefaultEditorLabel
 
     const items: ReadonlyArray<IMenuItem> = [
+      ...this.buildAliasMenuItems(),
+      {
+        label: __DARWIN__ ? 'Copy Repo Name' : 'Copy repo name',
+        action: this.copyToClipboard,
+      },
+      { type: 'separator' },
       {
         label: `Open in ${this.props.shellLabel}`,
         action: this.openInShell,
@@ -166,7 +174,33 @@ export class RepositoryListItem extends React.Component<
         action: this.removeRepository,
       },
     ]
+
     showContextualMenu(items)
+  }
+
+  private buildAliasMenuItems(): ReadonlyArray<IMenuItem> {
+    const repository = this.props.repository
+
+    if (!(repository instanceof Repository) || !enableRepositoryAliases()) {
+      return []
+    }
+
+    const verb = repository.alias == null ? 'Create' : 'Change'
+    const items: Array<IMenuItem> = [
+      {
+        label: __DARWIN__ ? `${verb} Alias` : `${verb} alias`,
+        action: this.changeAlias,
+      },
+    ]
+
+    if (repository.alias !== null) {
+      items.push({
+        label: __DARWIN__ ? 'Remove Alias' : 'Remove alias',
+        action: this.removeAlias,
+      })
+    }
+
+    return items
   }
 
   private removeRepository = () => {
@@ -184,9 +218,25 @@ export class RepositoryListItem extends React.Component<
   private openInExternalEditor = () => {
     this.props.onOpenInExternalEditor(this.props.repository)
   }
+
+  private changeAlias = () => {
+    if (this.props.repository instanceof Repository) {
+      this.props.onChangeRepositoryAlias(this.props.repository)
+    }
+  }
+
+  private removeAlias = () => {
+    if (this.props.repository instanceof Repository) {
+      this.props.onRemoveRepositoryAlias(this.props.repository)
+    }
+  }
+
+  private copyToClipboard = () => {
+    clipboard.writeText(this.props.repository.name)
+  }
 }
 
-const renderRepoIndicators: React.SFC<{
+const renderRepoIndicators: React.FunctionComponent<{
   aheadBehind: IAheadBehind | null
   hasChanges: boolean
 }> = props => {
@@ -213,22 +263,19 @@ const renderAheadBehindIndicator = (aheadBehind: IAheadBehind) => {
 
   return (
     <div className="ahead-behind" title={aheadBehindTooltip}>
-      {ahead > 0 && <Octicon symbol={OcticonSymbol.arrowSmallUp} />}
-      {behind > 0 && <Octicon symbol={OcticonSymbol.arrowSmallDown} />}
+      {ahead > 0 && <Octicon symbol={OcticonSymbol.arrowUp} />}
+      {behind > 0 && <Octicon symbol={OcticonSymbol.arrowDown} />}
     </div>
   )
 }
 
 const renderChangesIndicator = () => {
-  const classNames = enableGroupRepositoriesByOwner()
-    ? 'change-indicator-wrapper group-repositories-by-owner'
-    : 'change-indicator-wrapper'
   return (
     <div
-      className={classNames}
+      className="change-indicator-wrapper"
       title="There are uncommitted changes in this repository"
     >
-      <Octicon symbol={OcticonSymbol.primitiveDot} />
+      <Octicon symbol={OcticonSymbol.dotFill} />
     </div>
   )
 }

@@ -1,18 +1,28 @@
-import { Repository } from './repository'
+import {
+  Repository,
+  RepositoryWithGitHubRepository,
+  RepositoryWithForkedGitHubRepository,
+} from './repository'
 import { PullRequest } from './pull-request'
 import { Branch } from './branch'
-import { ReleaseSummary } from './release-notes'
+import { ReleaseNote, ReleaseSummary } from './release-notes'
 import { IRemote } from './remote'
 import { RetryAction } from './retry-actions'
 import { WorkingDirectoryFileChange } from './status'
 import { PreferencesTab } from './preferences'
-import { ICommitContext } from './commit'
+import { CommitOneLine, ICommitContext } from './commit'
 import { IStashEntry } from './stash-entry'
 import { Account } from '../models/account'
+import { Progress } from './progress'
+import { ITextDiff, DiffSelection } from './diff'
+import { RepositorySettingsTab } from '../ui/repository-settings/repository-settings'
+import { ICommitMessage } from './commit-message'
+import { IAuthor } from './author'
 
 export enum PopupType {
   RenameBranch = 1,
   DeleteBranch,
+  DeleteRemoteBranch,
   ConfirmDiscardChanges,
   Preferences,
   MergeBranch,
@@ -42,7 +52,6 @@ export enum PopupType {
   MergeConflicts,
   AbortMerge,
   OversizedFiles,
-  UsageReportingChanges,
   CommitConflictsWarning,
   PushNeedsPull,
   RebaseFlow,
@@ -53,6 +62,19 @@ export enum PopupType {
   CreateTutorialRepository,
   ConfirmExitTutorial,
   PushRejectedDueToMissingWorkflowScope,
+  SAMLReauthRequired,
+  CreateFork,
+  CreateTag,
+  DeleteTag,
+  LocalChangesOverwritten,
+  ChooseForkSettings,
+  ConfirmDiscardSelection,
+  CherryPick,
+  MoveToApplicationsFolder,
+  ChangeRepositoryAlias,
+  ThankYou,
+  CommitMessage,
+  MultiCommitOperation,
 }
 
 export type Popup =
@@ -64,11 +86,23 @@ export type Popup =
       existsOnRemote: boolean
     }
   | {
+      type: PopupType.DeleteRemoteBranch
+      repository: Repository
+      branch: Branch
+    }
+  | {
       type: PopupType.ConfirmDiscardChanges
       repository: Repository
       files: ReadonlyArray<WorkingDirectoryFileChange>
       showDiscardChangesSetting?: boolean
       discardingAllChanges?: boolean
+    }
+  | {
+      type: PopupType.ConfirmDiscardSelection
+      repository: Repository
+      file: WorkingDirectoryFileChange
+      diff: ITextDiff
+      selection: DiffSelection
     }
   | { type: PopupType.Preferences; initialSelectedTab?: PreferencesTab }
   | {
@@ -76,7 +110,11 @@ export type Popup =
       repository: Repository
       branch?: Branch
     }
-  | { type: PopupType.RepositorySettings; repository: Repository }
+  | {
+      type: PopupType.RepositorySettings
+      repository: Repository
+      initialSelectedTab?: RepositorySettingsTab
+    }
   | { type: PopupType.AddRepository; path?: string }
   | { type: PopupType.CreateRepository; path?: string }
   | {
@@ -86,9 +124,8 @@ export type Popup =
   | {
       type: PopupType.CreateBranch
       repository: Repository
-      currentBranchProtected: boolean
-
       initialName?: string
+      targetCommit?: CommitOneLine
     }
   | { type: PopupType.SignIn }
   | { type: PopupType.About }
@@ -117,7 +154,7 @@ export type Popup =
   | {
       type: PopupType.ExternalEditorFailed
       message: string
-      suggestAtom?: boolean
+      suggestDefaultEditor?: boolean
       openPreferences?: boolean
     }
   | { type: PopupType.OpenShellFailed; message: string }
@@ -156,7 +193,6 @@ export type Popup =
       context: ICommitContext
       repository: Repository
     }
-  | { type: PopupType.UsageReportingChanges }
   | {
       type: PopupType.CommitConflictsWarning
       /** files that were selected for committing that are also conflicted */
@@ -187,7 +223,7 @@ export type Popup =
   | {
       type: PopupType.ConfirmOverwriteStash
       repository: Repository
-      branchToCheckout: Branch
+      branchToCheckout: Branch | null
     }
   | {
       type: PopupType.ConfirmDiscardStash
@@ -197,6 +233,7 @@ export type Popup =
   | {
       type: PopupType.CreateTutorialRepository
       account: Account
+      progress?: Progress
     }
   | {
       type: PopupType.ConfirmExitTutorial
@@ -204,5 +241,67 @@ export type Popup =
   | {
       type: PopupType.PushRejectedDueToMissingWorkflowScope
       rejectedPath: string
+      repository: Repository
+    }
+  | {
+      type: PopupType.SAMLReauthRequired
+      organizationName: string
+      endpoint: string
+      retryAction?: RetryAction
+    }
+  | {
+      type: PopupType.CreateFork
+      repository: RepositoryWithGitHubRepository
+      account: Account
+    }
+  | {
+      type: PopupType.CreateTag
+      repository: Repository
+      targetCommitSha: string
+      initialName?: string
+      localTags: Map<string, string> | null
+    }
+  | {
+      type: PopupType.DeleteTag
+      repository: Repository
+      tagName: string
+    }
+  | {
+      type: PopupType.ChooseForkSettings
+      repository: RepositoryWithForkedGitHubRepository
+    }
+  | {
+      type: PopupType.LocalChangesOverwritten
+      repository: Repository
+      retryAction: RetryAction
+      files: ReadonlyArray<string>
+    }
+  | {
+      type: PopupType.CherryPick
+      repository: Repository
+      commits: ReadonlyArray<CommitOneLine>
+      sourceBranch: Branch | null
+    }
+  | { type: PopupType.MoveToApplicationsFolder }
+  | { type: PopupType.ChangeRepositoryAlias; repository: Repository }
+  | {
+      type: PopupType.ThankYou
+      userContributions: ReadonlyArray<ReleaseNote>
+      friendlyName: string
+      latestVersion: string | null
+    }
+  | {
+      type: PopupType.CommitMessage
+      coAuthors: ReadonlyArray<IAuthor>
+      showCoAuthoredBy: boolean
+      commitMessage: ICommitMessage | null
+      dialogTitle: string
+      dialogButtonText: string
+      prepopulateCommitSummary: boolean
+      repository: Repository
+      onSubmitCommitMessage: (context: ICommitContext) => Promise<boolean>
+    }
+  | {
+      type: PopupType.MultiCommitOperation
       repository: Repository
     }

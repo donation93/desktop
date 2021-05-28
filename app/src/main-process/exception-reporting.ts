@@ -1,4 +1,5 @@
 import { app, net } from 'electron'
+import { getArchitecture } from '../lib/get-architecture'
 
 const ErrorEndpoint = 'https://central.github.com/api/desktop/exception'
 const NonFatalErrorEndpoint =
@@ -24,6 +25,7 @@ export async function reportError(
   }
 
   data.set('platform', process.platform)
+  data.set('architecture', getArchitecture(app))
   data.set('sha', __SHA__)
   data.set('version', app.getVersion())
 
@@ -57,9 +59,7 @@ export async function reportError(
           resolve()
         } else {
           reject(
-            `Got ${response.statusCode} - ${
-              response.statusMessage
-            } from central`
+            `Got ${response.statusCode} - ${response.statusMessage} from central`
           )
         }
       })

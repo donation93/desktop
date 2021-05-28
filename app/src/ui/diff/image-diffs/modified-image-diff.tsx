@@ -13,6 +13,10 @@ interface IModifiedImageDiffProps {
   readonly previous: Image
   readonly current: Image
   readonly diffType: ImageDiffType
+  /**
+   * Called when the user is viewing an image diff and requests
+   * to change the diff presentation mode.
+   */
   readonly onChangeDiffType: (type: ImageDiffType) => void
 }
 
@@ -104,8 +108,8 @@ export class ModifiedImageDiff extends React.Component<
     this.resizedTimeoutID = null
 
     const containerSize = {
-      width: contentRect.width,
-      height: contentRect.height,
+      width: target.offsetWidth,
+      height: target.offsetHeight,
     }
     this.setState({ containerSize })
   }

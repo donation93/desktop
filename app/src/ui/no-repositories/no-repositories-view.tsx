@@ -13,7 +13,6 @@ import { CloneableRepositoryFilterList } from '../clone-repository/cloneable-rep
 import { IAPIRepository } from '../../lib/api'
 import { assertNever } from '../../lib/fatal-error'
 import { ClickSource } from '../lib/list'
-import { enableTutorial } from '../../lib/feature-flag'
 
 interface INoRepositoriesProps {
   /** A function to call when the user chooses to create a repository. */
@@ -37,11 +36,11 @@ interface INoRepositoriesProps {
   /** The logged in account for GitHub.com. */
   readonly dotComAccount: Account | null
 
-  /** The logged in account for GitHub Enterprise Server. */
+  /** The logged in account for GitHub Enterprise. */
   readonly enterpriseAccount: Account | null
 
   /**
-   * A map keyed on a user account (GitHub.com or GitHub Enterprise Server)
+   * A map keyed on a user account (GitHub.com or GitHub Enterprise)
    * containing an object with repositories that the authenticated
    * user has explicit permission (:read, :write, or :admin) to access
    * as well as information about whether the list of repositories
@@ -321,7 +320,7 @@ export class NoRepositoriesView extends React.Component<
     return (
       <TabBar selectedIndex={selectedIndex} onTabClicked={this.onTabClicked}>
         <span>GitHub.com</span>
-        <span>GitHub Enterprise Server</span>
+        <span>GitHub Enterprise</span>
       </TabBar>
     )
   }
@@ -357,10 +356,6 @@ export class NoRepositoriesView extends React.Component<
   }
 
   private renderTutorialRepositoryButton() {
-    if (!enableTutorial()) {
-      return null
-    }
-
     // No tutorial if you're not signed in.
     if (
       this.props.dotComAccount === null &&

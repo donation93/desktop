@@ -6,21 +6,16 @@ import { Branch } from '../../models/branch'
 import { Dispatcher } from '../dispatcher'
 import { Button } from '../lib/button'
 import { ActionStatusIcon } from '../lib/action-status-icon'
-import { MergeResult } from '../../models/merge'
+import { MergeTreeResult } from '../../models/merge'
 import { ComputedAction } from '../../models/computed-action'
 
 interface IMergeCallToActionWithConflictsProps {
   readonly repository: Repository
   readonly dispatcher: Dispatcher
-  readonly mergeStatus: MergeResult | null
+  readonly mergeStatus: MergeTreeResult | null
   readonly currentBranch: Branch
   readonly comparisonBranch: Branch
   readonly commitsBehind: number
-
-  /**
-   * Callback to execute after a merge has been performed
-   */
-  readonly onMerged: () => void
 }
 
 export class MergeCallToActionWithConflicts extends React.Component<
@@ -70,7 +65,7 @@ export class MergeCallToActionWithConflicts extends React.Component<
   private renderMergeDetails(
     currentBranch: Branch,
     comparisonBranch: Branch,
-    mergeStatus: MergeResult | null,
+    mergeStatus: MergeTreeResult | null,
     behindCount: number
   ) {
     if (mergeStatus === null) {
@@ -175,6 +170,5 @@ export class MergeCallToActionWithConflicts extends React.Component<
       showBranchList: false,
       filterText: '',
     })
-    this.props.onMerged()
   }
 }

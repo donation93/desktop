@@ -1,46 +1,51 @@
 import { getStartPoint } from '../../src/lib/create-branch'
 import { TipState, IValidBranch, IDetachedHead } from '../../src/models/tip'
-import { BranchType, StartPoint } from '../../src/models/branch'
+import {
+  BranchType,
+  StartPoint,
+  IBranchTip,
+  Branch,
+} from '../../src/models/branch'
+import { CommitIdentity } from '../../src/models/commit-identity'
 
-const stubAuthor = {
+const stubAuthor: CommitIdentity = {
   name: 'Brendan Forster',
   email: 'brendan@example.com',
   date: new Date(),
   tzOffset: 0,
 }
 
-const stubTip = {
+const stubTip: IBranchTip = {
   sha: 'deadbeef',
-  shortSha: 'dead',
-  summary: 'some commit',
-  body: '',
-  coAuthors: [],
   author: stubAuthor,
-  committer: stubAuthor,
-  authoredByCommitter: true,
-  parentSHAs: [],
-  trailers: [],
-  isWebFlowCommitter: false,
 }
 
-const defaultBranch = {
+const defaultBranch: Branch = {
   name: 'my-default-branch',
   upstream: null,
   tip: stubTip,
   type: BranchType.Local,
-  remote: null,
+  remoteName: null,
+  upstreamRemoteName: null,
   upstreamWithoutRemote: null,
   nameWithoutRemote: 'my-default-branch',
+  isDesktopForkRemoteBranch: false,
+  ref: '',
 }
 
-const someOtherBranch = {
+const upstreamDefaultBranch = null
+
+const someOtherBranch: Branch = {
   name: 'some-other-branch',
   upstream: null,
   tip: stubTip,
   type: BranchType.Local,
-  remote: null,
+  remoteName: null,
+  upstreamRemoteName: null,
   upstreamWithoutRemote: null,
   nameWithoutRemote: 'some-other-branch',
+  isDesktopForkRemoteBranch: false,
+  ref: '',
 }
 
 describe('create-branch/getStartPoint', () => {
@@ -51,7 +56,10 @@ describe('create-branch/getStartPoint', () => {
     }
 
     const action = (startPoint: StartPoint) => {
-      return getStartPoint({ tip, defaultBranch }, startPoint)
+      return getStartPoint(
+        { tip, defaultBranch, upstreamDefaultBranch },
+        startPoint
+      )
     }
 
     it('returns current HEAD when HEAD requested', () => {
@@ -74,7 +82,10 @@ describe('create-branch/getStartPoint', () => {
     }
 
     const action = (startPoint: StartPoint) => {
-      return getStartPoint({ tip, defaultBranch }, startPoint)
+      return getStartPoint(
+        { tip, defaultBranch, upstreamDefaultBranch },
+        startPoint
+      )
     }
 
     it('returns current HEAD when HEAD requested', () => {
@@ -97,7 +108,10 @@ describe('create-branch/getStartPoint', () => {
     }
 
     const action = (startPoint: StartPoint) => {
-      return getStartPoint({ tip, defaultBranch }, startPoint)
+      return getStartPoint(
+        { tip, defaultBranch, upstreamDefaultBranch },
+        startPoint
+      )
     }
 
     it('returns current HEAD when HEAD requested', () => {

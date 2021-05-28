@@ -37,6 +37,19 @@ function extractCoAuthors(trailers: ReadonlyArray<ITrailer>) {
   return coAuthors
 }
 
+function trimCoAuthorsTrailers(
+  trailers: ReadonlyArray<ITrailer>,
+  body: string
+) {
+  let trimmedCoAuthors = body
+
+  trailers.filter(isCoAuthoredByTrailer).forEach(({ token, value }) => {
+    trimmedCoAuthors = trimmedCoAuthors.replace(`${token}: ${value}`, '')
+  })
+
+  return trimmedCoAuthors
+}
+
 /**
  * A minimal shape of data to represent a commit, for situations where the
  * application does not require the full commit metadata.
@@ -60,6 +73,11 @@ export class Commit {
   public readonly coAuthors: ReadonlyArray<GitAuthor>
 
   /**
+   * The commit body after removing coauthors
+   */
+  public readonly bodyNoCoAuthors: string
+
+  /**
    * A value indicating whether the author and the committer
    * are the same person.
    */
@@ -73,10 +91,11 @@ export class Commit {
    * @param author Information about the author of this commit.
    *               Includes name, email and date.
    * @param committer Information about the committer of this commit.
-   *                 Includes name, email and date.
+   *                  Includes name, email and date.
    * @param parentSHAS The SHAs for the parents of the commit.
    * @param trailers Parsed, unfolded trailers from the commit message body,
    *                 if any, as interpreted by `git interpret-trailers`
+   * @param tags Tags associated with this commit.
    */
   public constructor(
     public readonly sha: string,
@@ -86,12 +105,15 @@ export class Commit {
     public readonly author: CommitIdentity,
     public readonly committer: CommitIdentity,
     public readonly parentSHAs: ReadonlyArray<string>,
-    public readonly trailers: ReadonlyArray<ITrailer>
+    public readonly trailers: ReadonlyArray<ITrailer>,
+    public readonly tags: ReadonlyArray<string>
   ) {
     this.coAuthors = extractCoAuthors(trailers)
 
     this.authoredByCommitter =
       this.author.name === this.committer.name &&
       this.author.email === this.committer.email
+
+    this.bodyNoCoAuthors = trimCoAuthorsTrailers(trailers, body)
   }
 }

@@ -1,5 +1,4 @@
 import { Shell } from '../lib/shells'
-import { ExternalEditor } from '../lib/editors'
 
 export type MenuLabelsEvent = {
   /**
@@ -16,7 +15,7 @@ export type MenuLabelsEvent = {
    * Specify `null` to indicate that it is not known currently, which will
    * default to a placeholder based on the current platform.
    */
-  readonly selectedExternalEditor: ExternalEditor | null
+  readonly selectedExternalEditor: string | null
 
   /**
    * Has the use enabled "Show confirmation dialog before force pushing"?
@@ -49,4 +48,11 @@ export type MenuLabelsEvent = {
    * Specify whether a stashed change is accessible in the current branch.
    */
   readonly isStashedChangesVisible?: boolean
+
+  /**
+   * Whether or not attempting to stash working directory changes will result
+   * in a confirmation dialog asking the user whether they want to override
+   * their existing stash or not.
+   */
+  readonly askForConfirmationWhenStashingAllChanges?: boolean
 }

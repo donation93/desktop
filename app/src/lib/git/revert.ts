@@ -1,5 +1,4 @@
 import { git, gitNetworkArguments, IGitExecutionOptions } from './core'
-import { envForAuthentication } from './authentication'
 
 import { Repository } from '../../models/repository'
 import { Commit } from '../../models/commit'
@@ -8,6 +7,9 @@ import { IGitAccount } from '../../models/git-account'
 
 import { executionOptionsWithProgress } from '../progress/from-process'
 import { RevertProgressParser } from '../progress/revert'
+import { getFallbackUrlForProxyResolve } from './environment'
+import { merge } from '../merge'
+import { withTrampolineEnvForRemoteOperation } from '../trampoline/trampoline-environment'
 
 /**
  * Creates a new commit that reverts the changes of a previous commit
@@ -34,9 +36,8 @@ export async function revertCommit(
 
   let opts: IGitExecutionOptions = {}
   if (progressCallback) {
-    const env = envForAuthentication(account)
     opts = await executionOptionsWithProgress(
-      { env, trackLFSProgress: true },
+      { trackLFSProgress: true },
       new RevertProgressParser(),
       progress => {
         const description =
@@ -49,5 +50,14 @@ export async function revertCommit(
     )
   }
 
-  await git(args, repository.path, 'revert', opts)
+  await withTrampolineEnvForRemoteOperation(
+    account,
+    getFallbackUrlForProxyResolve(account, repository),
+    env => {
+      return git(args, repository.path, 'revert', {
+        ...opts,
+        env: merge(opts.env, env),
+      })
+    }
+  )
 }

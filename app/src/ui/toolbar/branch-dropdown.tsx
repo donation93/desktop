@@ -1,15 +1,21 @@
 import * as React from 'react'
 import { Dispatcher } from '../dispatcher'
-import { OcticonSymbol } from '../octicons'
+import { OcticonSymbol, syncClockwise } from '../octicons'
 import { Repository } from '../../models/repository'
 import { TipState } from '../../models/tip'
 import { ToolbarDropdown, DropdownState } from './dropdown'
-import { IRepositoryState, isRebaseConflictState } from '../../lib/app-state'
+import {
+  FoldoutType,
+  IRepositoryState,
+  isRebaseConflictState,
+} from '../../lib/app-state'
 import { BranchesContainer, PullRequestBadge } from '../branches'
 import { assertNever } from '../../lib/fatal-error'
 import { BranchesTab } from '../../models/branches-tab'
 import { PullRequest } from '../../models/pull-request'
-import * as classNames from 'classnames'
+import classNames from 'classnames'
+import { dragAndDropManager } from '../../lib/drag-and-drop-manager'
+import { DragType } from '../../models/drag-drop'
 
 interface IBranchDropdownProps {
   readonly dispatcher: Dispatcher
@@ -54,8 +60,6 @@ export class BranchDropdown extends React.Component<IBranchDropdownProps> {
   private renderBranchFoldout = (): JSX.Element | null => {
     const repositoryState = this.props.repositoryState
     const branchesState = repositoryState.branchesState
-    const currentBranchProtected =
-      repositoryState.changesState.currentBranchProtected
 
     const tip = repositoryState.branchesState.tip
     const currentBranch = tip.kind === TipState.Valid ? tip.branch : null
@@ -72,7 +76,6 @@ export class BranchDropdown extends React.Component<IBranchDropdownProps> {
         pullRequests={this.props.pullRequests}
         currentPullRequest={this.props.currentPullRequest}
         isLoadingPullRequests={this.props.isLoadingPullRequests}
-        currentBranchProtected={currentBranchProtected}
       />
     )
   }
@@ -112,7 +115,9 @@ export class BranchDropdown extends React.Component<IBranchDropdownProps> {
     } else if (tip.kind === TipState.Unborn) {
       title = tip.ref
       tooltip = `Current branch is ${tip.ref}`
-      canOpen = branchesState.allBranches.length > 0
+      canOpen = branchesState.allBranches.some(
+        b => !b.isDesktopForkRemoteBranch
+      )
     } else if (tip.kind === TipState.Detached) {
       title = `On ${tip.currentSha.substr(0, 7)}`
       tooltip = 'Currently on a detached HEAD'
@@ -133,11 +138,11 @@ export class BranchDropdown extends React.Component<IBranchDropdownProps> {
 
       if (checkoutProgress.value > 0) {
         const friendlyProgress = Math.round(checkoutProgress.value * 100)
-        description = `${description} (${friendlyProgress} %)`
+        description = `${description} (${friendlyProgress}%)`
       }
 
       progressValue = checkoutProgress.value
-      icon = OcticonSymbol.sync
+      icon = syncClockwise
       iconClassName = 'spin'
       canOpen = false
     } else if (conflictState !== null && isRebaseConflictState(conflictState)) {
@@ -169,17 +174,30 @@ export class BranchDropdown extends React.Component<IBranchDropdownProps> {
         showDisclosureArrow={canOpen}
         progressValue={progressValue}
         buttonClassName={buttonClassName}
+        onMouseEnter={this.onMouseEnter}
       >
         {this.renderPullRequestInfo()}
       </ToolbarDropdown>
     )
   }
 
+  /**
+   * Method to capture when the mouse is over the branch dropdown button.
+   *
+   * We currently only use this in conjunction with dragging cherry picks so
+   * that we can open the branch menu when dragging a commit over it.
+   */
+  private onMouseEnter = (): void => {
+    if (dragAndDropManager.isDragOfTypeInProgress(DragType.Commit)) {
+      dragAndDropManager.emitEnterDragZone('branch-button')
+      this.props.dispatcher.showFoldout({ type: FoldoutType.Branch })
+    }
+  }
+
   private renderPullRequestInfo() {
     const pr = this.props.currentPullRequest
-    const repository = this.props.repository.gitHubRepository
 
-    if (pr === null || repository === null) {
+    if (pr === null) {
       return null
     }
 
@@ -187,7 +205,7 @@ export class BranchDropdown extends React.Component<IBranchDropdownProps> {
       <PullRequestBadge
         number={pr.pullRequestNumber}
         dispatcher={this.props.dispatcher}
-        repository={repository}
+        repository={pr.base.gitHubRepository}
       />
     )
   }

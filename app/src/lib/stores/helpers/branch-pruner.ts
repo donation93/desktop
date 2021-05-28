@@ -1,4 +1,7 @@
-import { Repository } from '../../../models/repository'
+import {
+  Repository,
+  isRepositoryWithGitHubRepository,
+} from '../../../models/repository'
 import { RepositoriesStore } from '../repositories-store'
 import { Branch } from '../../../models/branch'
 import { GitStoreCache } from '../git-store-cache'
@@ -7,17 +10,18 @@ import {
   getBranchCheckouts,
   getSymbolicRef,
   formatAsLocalRef,
-  deleteLocalBranch,
   getBranches,
+  deleteLocalBranch,
 } from '../../git'
 import { fatalError } from '../../fatal-error'
 import { RepositoryStateCache } from '../repository-state-cache'
-import * as moment from 'moment'
+import moment from 'moment'
 
 /** Check if a repo needs to be pruned at least every 4 hours */
 const BackgroundPruneMinimumInterval = 1000 * 60 * 60 * 4
 const ReservedRefs = [
   'HEAD',
+  'refs/heads/main',
   'refs/heads/master',
   'refs/heads/gh-pages',
   'refs/heads/develop',
@@ -67,9 +71,7 @@ export class BranchPruner {
   public async start() {
     if (this.timer !== null) {
       fatalError(
-        `A background prune task is already active and cannot begin pruning on ${
-          this.repository.name
-        }`
+        `A background prune task is already active and cannot begin pruning on ${this.repository.name}`
       )
     }
 
@@ -128,8 +130,7 @@ export class BranchPruner {
   private async pruneLocalBranches(
     options: PruneRuntimeOptions
   ): Promise<void> {
-    const { gitHubRepository } = this.repository
-    if (gitHubRepository === null) {
+    if (!isRepositoryWithGitHubRepository(this.repository)) {
       return
     }
 
@@ -142,7 +143,7 @@ export class BranchPruner {
     const dateNow = moment()
     const threshold = dateNow.subtract(24, 'hours')
 
-    // Using type coelescing behavior to deal with Dexie returning `undefined`
+    // Using type coalescing behavior to deal with Dexie returning `undefined`
     // for records that haven't been updated with the new field yet
     if (
       options.enforcePruneThreshold &&
@@ -182,9 +183,7 @@ export class BranchPruner {
     }
 
     // Get all branches checked out within the past 2 weeks
-    const twoWeeksAgo = moment()
-      .subtract(2, 'weeks')
-      .toDate()
+    const twoWeeksAgo = moment().subtract(2, 'weeks').toDate()
     const recentlyCheckedOutBranches = await getBranchCheckouts(
       this.repository,
       twoWeeksAgo
@@ -193,11 +192,10 @@ export class BranchPruner {
       [...recentlyCheckedOutBranches.keys()].map(formatAsLocalRef)
     )
 
-    // get the locally cached branches of remotes (ie `remotes/origin/master`)
-    const remoteBranches = (await getBranches(
-      this.repository,
-      `refs/remotes/`
-    )).map(b => formatAsLocalRef(b.name))
+    // get the locally cached branches of remotes (ie `remotes/origin/main`)
+    const remoteBranches = (
+      await getBranches(this.repository, `refs/remotes/`)
+    ).map(b => formatAsLocalRef(b.name))
 
     // create list of branches to be pruned
     const branchesReadyForPruning = Array.from(mergedBranches.keys()).filter(
@@ -217,11 +215,7 @@ export class BranchPruner {
     )
 
     log.info(
-      `[BranchPruner] Pruning ${
-        branchesReadyForPruning.length
-      } branches that have been merged into the default branch, ${
-        defaultBranch.name
-      } (${defaultBranch.tip.sha}), from '${this.repository.name}`
+      `[BranchPruner] Pruning ${branchesReadyForPruning.length} branches that have been merged into the default branch, ${defaultBranch.name} (${defaultBranch.tip.sha}), from '${this.repository.name}`
     )
 
     const gitStore = this.gitStoreCache.get(this.repository)

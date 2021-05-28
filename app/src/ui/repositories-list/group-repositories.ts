@@ -8,7 +8,6 @@ import { getDotComAPIEndpoint } from '../../lib/api'
 import { caseInsensitiveCompare } from '../../lib/compare'
 import { IFilterListGroup, IFilterListItem } from '../lib/filter-list'
 import { IAheadBehind } from '../../models/branch'
-import { enableGroupRepositoriesByOwner } from '../../lib/feature-flag'
 
 /**
  * Special, reserved repository group names
@@ -52,12 +51,8 @@ export function groupRepositories(
     let group: RepositoryGroupIdentifier = KnownRepositoryGroup.NonGitHub
     if (gitHubRepository) {
       if (gitHubRepository.endpoint === getDotComAPIEndpoint()) {
-        if (enableGroupRepositoriesByOwner()) {
-          group = gitHubRepository.owner.login
-          gitHubOwners.add(group)
-        } else {
-          group = 'GitHub.com'
-        }
+        group = gitHubRepository.owner.login
+        gitHubOwners.add(group)
       } else {
         group = KnownRepositoryGroup.Enterprise
       }
@@ -94,23 +89,14 @@ export function groupRepositories(
       const { aheadBehind, changedFilesCount } =
         localRepositoryStateLookup.get(r.id) || fallbackValue
       const repositoryText =
-        r instanceof Repository ? [r.name, nameOf(r)] : [r.name]
-      if (enableGroupRepositoriesByOwner()) {
-        return {
-          text: repositoryText,
-          id: r.id.toString(),
-          repository: r,
-          needsDisambiguation:
-            nameCount > 1 && identifier === KnownRepositoryGroup.Enterprise,
-          aheadBehind,
-          changedFilesCount,
-        }
-      }
+        r instanceof Repository ? [r.alias ?? r.name, nameOf(r)] : [r.name]
+
       return {
-        text: [r.name],
+        text: repositoryText,
         id: r.id.toString(),
         repository: r,
-        needsDisambiguation: nameCount > 1,
+        needsDisambiguation:
+          nameCount > 1 && identifier === KnownRepositoryGroup.Enterprise,
         aheadBehind,
         changedFilesCount,
       }
@@ -120,13 +106,10 @@ export function groupRepositories(
   }
 
   // NB: This ordering reflects the order in the repositories sidebar.
-  if (enableGroupRepositoriesByOwner()) {
-    const owners = [...gitHubOwners.values()]
-    owners.sort(caseInsensitiveCompare)
-    owners.forEach(addGroup)
-  } else {
-    addGroup('GitHub.com')
-  }
+  const owners = [...gitHubOwners.values()]
+  owners.sort(caseInsensitiveCompare)
+  owners.forEach(addGroup)
+
   addGroup(KnownRepositoryGroup.Enterprise)
   addGroup(KnownRepositoryGroup.NonGitHub)
 
@@ -149,8 +132,10 @@ export function makeRecentRepositoriesGroup(
   for (const id of recentRepositories) {
     const repository = repositories.find(r => r.id === id)
     if (repository !== undefined) {
-      const existingCount = names.get(repository.name) || 0
-      names.set(repository.name, existingCount + 1)
+      const alias = repository instanceof Repository ? repository.alias : null
+      const name = alias ?? repository.name
+      const existingCount = names.get(name) || 0
+      names.set(name, existingCount + 1)
     }
   }
 
@@ -164,11 +149,13 @@ export function makeRecentRepositoriesGroup(
 
     const { aheadBehind, changedFilesCount } =
       localRepositoryStateLookup.get(id) || fallbackValue
+    const repositoryAlias =
+      repository instanceof Repository ? repository.alias : null
     const repositoryText =
       repository instanceof Repository
-        ? [repository.name, nameOf(repository)]
+        ? [repositoryAlias ?? repository.name, nameOf(repository)]
         : [repository.name]
-    const nameCount = names.get(repository.name) || 0
+    const nameCount = names.get(repositoryAlias ?? repository.name) || 0
     items.push({
       text: repositoryText,
       id: id.toString(),

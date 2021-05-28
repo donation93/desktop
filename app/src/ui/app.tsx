@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { ipcRenderer, remote } from 'electron'
-import { CSSTransitionGroup } from 'react-transition-group'
+import { TransitionGroup, CSSTransition } from 'react-transition-group'
 
 import {
   IAppState,
@@ -8,6 +8,9 @@ import {
   FoldoutType,
   SelectionType,
   HistoryTabMode,
+  ICherryPickState,
+  isRebaseConflictState,
+  isCherryPickConflictState,
 } from '../lib/app-state'
 import { Dispatcher } from './dispatcher'
 import { AppStore, GitHubUserStore, IssuesStore } from '../lib/stores'
@@ -17,13 +20,18 @@ import { updateStore, UpdateStatus } from './lib/update-store'
 import { RetryAction } from '../models/retry-actions'
 import { shouldRenderApplicationMenu } from './lib/features'
 import { matchExistingRepository } from '../lib/repository-matching'
-import { getDotComAPIEndpoint, IAPIRepository } from '../lib/api'
-import { ILaunchStats, SamplesURL } from '../lib/stats'
+import { getDotComAPIEndpoint } from '../lib/api'
+import { ILaunchStats } from '../lib/stats'
 import { getVersion, getName } from './lib/app-proxy'
 import { getOS } from '../lib/get-os'
 import { validatedRepositoryPath } from '../lib/stores/helpers/validated-repository-path'
 import { MenuEvent } from '../main-process/menu'
-import { Repository } from '../models/repository'
+import {
+  Repository,
+  getGitHubHtmlUrl,
+  getNonForkGitHubRepository,
+  isRepositoryWithGitHubRepository,
+} from '../models/repository'
 import { Branch } from '../models/branch'
 import { PreferencesTab } from '../models/preferences'
 import { findItemByAccessKey, itemIsSelectable } from '../models/app-menu'
@@ -37,7 +45,7 @@ import { TitleBar, ZoomInfo, FullScreenInfo } from './window'
 import { RepositoriesList } from './repositories-list'
 import { RepositoryView } from './repository'
 import { RenameBranch } from './rename-branch'
-import { DeleteBranch } from './delete-branch'
+import { DeleteBranch, DeleteRemoteBranch } from './delete-branch'
 import { CloningRepositoryView } from './cloning-repository'
 import {
   Toolbar,
@@ -48,11 +56,7 @@ import {
   RevertProgress,
 } from './toolbar'
 import { OcticonSymbol, iconForRepository } from './octicons'
-import {
-  showCertificateTrustDialog,
-  registerContextualMenuActionDispatcher,
-  sendReady,
-} from './main-process-proxy'
+import { showCertificateTrustDialog, sendReady } from './main-process-proxy'
 import { DiscardChanges } from './discard-changes'
 import { Welcome } from './welcome'
 import { AppMenuBar } from './app-menu'
@@ -83,15 +87,18 @@ import { InitializeLFS, AttributeMismatch } from './lfs'
 import { UpstreamAlreadyExists } from './upstream-already-exists'
 import { ReleaseNotes } from './release-notes'
 import { DeletePullRequest } from './delete-branch/delete-pull-request-dialog'
-import { MergeConflictsDialog, CommitConflictsWarning } from './merge-conflicts'
+import { CommitConflictsWarning } from './merge-conflicts'
 import { AppTheme } from './app-theme'
 import { ApplicationTheme } from './lib/application-theme'
 import { RepositoryStateCache } from '../lib/stores/repository-state-cache'
 import { AbortMergeWarning } from './abort-merge'
-import { isConflictedFile } from '../lib/status'
+import {
+  getConflictedFiles,
+  getResolvedFiles,
+  isConflictedFile,
+} from '../lib/status'
 import { PopupType, Popup } from '../models/popup'
 import { OversizedFiles } from './changes/oversized-files-warning'
-import { UsageStatsChange } from './usage-stats-change'
 import { PushNeedsPullWarning } from './push-needs-pull'
 import { RebaseFlow, ConfirmForcePush } from './rebase'
 import {
@@ -99,15 +106,56 @@ import {
   initializeRebaseFlowForConflictedRepository,
   isCurrentBranchForcePush,
 } from '../lib/rebase'
-import { BannerType } from '../models/banner'
+import { Banner, BannerType } from '../models/banner'
 import { StashAndSwitchBranch } from './stash-changes/stash-and-switch-branch-dialog'
 import { OverwriteStash } from './stash-changes/overwrite-stashed-changes-dialog'
 import { ConfirmDiscardStashDialog } from './stashing/confirm-discard-stash'
 import { CreateTutorialRepositoryDialog } from './no-repositories/create-tutorial-repository-dialog'
-import { enableTutorial } from '../lib/feature-flag'
 import { ConfirmExitTutorial } from './tutorial'
 import { TutorialStep, isValidTutorialStep } from '../models/tutorial-step'
 import { WorkflowPushRejectedDialog } from './workflow-push-rejected/workflow-push-rejected'
+import { SAMLReauthRequiredDialog } from './saml-reauth-required/saml-reauth-required'
+import { CreateForkDialog } from './forks/create-fork-dialog'
+import { findDefaultUpstreamBranch } from '../lib/branch'
+import {
+  GitHubRepository,
+  hasWritePermission,
+} from '../models/github-repository'
+import { CreateTag } from './create-tag'
+import { DeleteTag } from './delete-tag'
+import { ChooseForkSettings } from './choose-fork-settings'
+import { DiscardSelection } from './discard-changes/discard-selection-dialog'
+import { LocalChangesOverwrittenDialog } from './local-changes-overwritten/local-changes-overwritten-dialog'
+import memoizeOne from 'memoize-one'
+import { AheadBehindStore } from '../lib/stores/ahead-behind-store'
+import { CherryPickFlow } from './cherry-pick/cherry-pick-flow'
+import {
+  CherryPickStepKind,
+  ChooseTargetBranchesStep,
+} from '../models/cherry-pick'
+import { getAccountForRepository } from '../lib/get-account-for-repository'
+import { CommitOneLine } from '../models/commit'
+import { WorkingDirectoryStatus } from '../models/status'
+import { CommitDragElement } from './drag-elements/commit-drag-element'
+import classNames from 'classnames'
+import { MoveToApplicationsFolder } from './move-to-applications-folder'
+import { ChangeRepositoryAlias } from './change-repository-alias/change-repository-alias-dialog'
+import { ThankYou } from './thank-you'
+import {
+  getUserContributions,
+  hasUserAlreadyBeenCheckedOrThanked,
+  updateLastThankYou,
+} from '../lib/thank-you'
+import { ReleaseNote } from '../models/release-notes'
+import { CommitMessageDialog } from './commit-message/commit-message-dialog'
+import { buildAutocompletionProviders } from './autocompletion'
+import { DragType, DropTargetSelector } from '../models/drag-drop'
+import { enableSquashing } from '../lib/feature-flag'
+import { ConflictsDialog } from './multi-commit-operation/conflicts-dialog'
+import { DefaultCommitMessage } from '../models/commit-message'
+import { ManualConflictResolution } from '../models/manual-conflict-resolution'
+import { dragAndDropManager } from '../lib/drag-and-drop-manager'
+import { MultiCommitOperation } from './multi-commit-operation/multi-commit-operation'
 
 const MinuteInMilliseconds = 1000 * 60
 const HourInMilliseconds = MinuteInMilliseconds * 60
@@ -122,27 +170,22 @@ const UpdateCheckInterval = 4 * HourInMilliseconds
  */
 const SendStatsInterval = 4 * HourInMilliseconds
 
-/**
- * Wait 2 minutes before refreshing repository indicators
- */
-const InitialRepositoryIndicatorTimeout = 2 * MinuteInMilliseconds
-
-/**
- * Refresh repository indicators every 15 minutes.
- */
-const UpdateRepositoryIndicatorInterval = 15 * MinuteInMilliseconds
-
 interface IAppProps {
   readonly dispatcher: Dispatcher
   readonly repositoryStateManager: RepositoryStateCache
   readonly appStore: AppStore
   readonly issuesStore: IssuesStore
   readonly gitHubUserStore: GitHubUserStore
+  readonly aheadBehindStore: AheadBehindStore
   readonly startTime: number
 }
 
-export const dialogTransitionEnterTimeout = 250
-export const dialogTransitionLeaveTimeout = 100
+export const dialogTransitionTimeout = {
+  enter: 250,
+  exit: 100,
+}
+
+export const bannerTransitionTimeout = { enter: 500, exit: 400 }
 
 /**
  * The time to delay (in ms) from when we've loaded the initial state to showing
@@ -150,7 +193,6 @@ export const dialogTransitionLeaveTimeout = 100
  * changes. See https://github.com/desktop/desktop/issues/1398.
  */
 const ReadyDelay = 100
-
 export class App extends React.Component<IAppProps, IAppState> {
   private loading = true
 
@@ -171,10 +213,17 @@ export class App extends React.Component<IAppProps, IAppState> {
     return this.state.currentPopup !== null || this.state.errors.length > 0
   }
 
+  /**
+   * Returns a memoized instance of onPopupDismissed() bound to the
+   * passed popupType, so it can be used in render() without creating
+   * multiple instances when the component gets re-rendered.
+   */
+  private getOnPopupDismissedFn = memoizeOne((popupType: PopupType) => {
+    return () => this.onPopupDismissed(popupType)
+  })
+
   public constructor(props: IAppProps) {
     super(props)
-
-    registerContextualMenuActionDispatcher()
 
     props.dispatcher.loadInitialState().then(() => {
       this.loading = false
@@ -191,16 +240,6 @@ export class App extends React.Component<IAppProps, IAppState> {
         },
         { timeout: ReadyDelay }
       )
-
-      const initialTimeout = window.setTimeout(async () => {
-        window.clearTimeout(initialTimeout)
-
-        await this.props.appStore.refreshAllSidebarIndicators()
-
-        this.updateIntervalHandle = window.setInterval(() => {
-          this.props.appStore.refreshAllSidebarIndicators()
-        }, UpdateRepositoryIndicatorInterval)
-      }, InitialRepositoryIndicatorTimeout)
     })
 
     this.state = props.appStore.getState()
@@ -214,7 +253,7 @@ export class App extends React.Component<IAppProps, IAppState> {
 
     ipcRenderer.on(
       'menu-event',
-      (event: Electron.IpcMessageEvent, { name }: { name: MenuEvent }) => {
+      (event: Electron.IpcRendererEvent, { name }: { name: MenuEvent }) => {
         this.onMenuEvent(name)
       }
     )
@@ -241,7 +280,10 @@ export class App extends React.Component<IAppProps, IAppState> {
 
     ipcRenderer.on(
       'launch-timing-stats',
-      (event: Electron.IpcMessageEvent, { stats }: { stats: ILaunchStats }) => {
+      (
+        event: Electron.IpcRendererEvent,
+        { stats }: { stats: ILaunchStats }
+      ) => {
         console.info(`App ready time: ${stats.mainReadyTime}ms`)
         console.info(`Load time: ${stats.loadTime}ms`)
         console.info(`Renderer ready time: ${stats.rendererReadyTime}ms`)
@@ -253,7 +295,7 @@ export class App extends React.Component<IAppProps, IAppState> {
     ipcRenderer.on(
       'certificate-error',
       (
-        event: Electron.IpcMessageEvent,
+        event: Electron.IpcRendererEvent,
         {
           certificate,
           error,
@@ -267,6 +309,8 @@ export class App extends React.Component<IAppProps, IAppState> {
         })
       }
     )
+
+    dragAndDropManager.onDragEnded(this.onDragEnd)
   }
 
   public componentWillUnmount() {
@@ -288,6 +332,17 @@ export class App extends React.Component<IAppProps, IAppState> {
 
     log.info(`launching: ${getVersion()} (${getOS()})`)
     log.info(`execPath: '${process.execPath}'`)
+
+    // Only show the popup in beta/production releases and mac machines
+    if (
+      __DEV__ === false &&
+      this.state.askToMoveToApplicationsFolderSetting &&
+      remote.app.isInApplicationsFolder?.() === false
+    ) {
+      this.showPopup({ type: PopupType.MoveToApplicationsFolder })
+    }
+
+    this.checkIfThankYouIsInOrder()
   }
 
   private onMenuEvent(name: MenuEvent): any {
@@ -325,6 +380,8 @@ export class App extends React.Component<IAppProps, IAppState> {
         return this.deleteBranch()
       case 'discard-all-changes':
         return this.discardAllChanges()
+      case 'stash-all-changes':
+        return this.stashAllChanges()
       case 'show-preferences':
         return this.props.dispatcher.showPopup({ type: PopupType.Preferences })
       case 'open-working-directory':
@@ -346,6 +403,8 @@ export class App extends React.Component<IAppProps, IAppState> {
         return this.viewRepositoryOnGitHub()
       case 'compare-on-github':
         return this.compareBranchOnDotcom()
+      case 'create-issue-in-repository-on-github':
+        return this.openIssueCreationOnGitHub()
       case 'open-in-shell':
         return this.openCurrentRepositoryInShell()
       case 'clone-repository':
@@ -374,9 +433,9 @@ export class App extends React.Component<IAppProps, IAppState> {
         return this.testPruneBranches()
       case 'find-text':
         return this.findText()
+      default:
+        return assertNever(name, `Unknown menu event name: ${name}`)
     }
-
-    return assertNever(name, `Unknown menu event name: ${name}`)
   }
 
   /**
@@ -427,6 +486,12 @@ export class App extends React.Component<IAppProps, IAppState> {
             {
               kind: 'other',
               message: 'In other news...',
+            },
+          ],
+          thankYous: [
+            {
+              kind: 'other',
+              message: 'In other news... . Thanks @some-body-to-thank!',
             },
           ],
         },
@@ -579,9 +644,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       return
     }
 
-    const compareURL = `${htmlURL}/compare/${
-      branchTip.branch.upstreamWithoutRemote
-    }`
+    const compareURL = `${htmlURL}/compare/${branchTip.branch.upstreamWithoutRemote}`
     this.props.dispatcher.openInBrowser(compareURL)
   }
 
@@ -658,6 +721,14 @@ export class App extends React.Component<IAppProps, IAppState> {
     })
   }
 
+  private stashAllChanges() {
+    const repository = this.getRepository()
+
+    if (repository !== null && repository instanceof Repository) {
+      this.props.dispatcher.createStashForCurrentBranch(repository)
+    }
+  }
+
   private showAddLocalRepo = () => {
     return this.props.dispatcher.showPopup({ type: PopupType.AddRepository })
   }
@@ -684,11 +755,7 @@ export class App extends React.Component<IAppProps, IAppState> {
     })
   }
 
-  private onCreateTutorialRepository = () => {
-    if (!enableTutorial()) {
-      return
-    }
-
+  private showCreateTutorialRepositoryPopup = () => {
     const account = this.getDotComAccount() || this.getEnterpriseAccount()
 
     if (account === null) {
@@ -718,9 +785,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         : null
 
     const isTutorialRepository =
-      enableTutorial() &&
-      selectedRepository &&
-      selectedRepository.isTutorialRepository
+      selectedRepository && selectedRepository.isTutorialRepository
 
     return isTutorialRepository ? selectedRepository : null
   }
@@ -979,39 +1044,33 @@ export class App extends React.Component<IAppProps, IAppState> {
   }
 
   private async handleDragAndDrop(fileList: FileList) {
-    const paths: string[] = []
-    for (let i = 0; i < fileList.length; i++) {
-      const file = fileList[i]
-      paths.push(file.path)
-    }
+    const paths = [...fileList].map(x => x.path)
+    const { dispatcher } = this.props
 
     // If they're bulk adding repositories then just blindly try to add them.
     // But if they just dragged one, use the dialog so that they can initialize
     // it if needed.
     if (paths.length > 1) {
-      const addedRepositories = await this.addRepositories(paths)
+      const addedRepositories = await dispatcher.addRepositories(paths)
+
       if (addedRepositories.length > 0) {
-        this.props.dispatcher.recordAddExistingRepository()
+        dispatcher.recordAddExistingRepository()
+        await dispatcher.selectRepository(addedRepositories[0])
       }
-    } else {
+    } else if (paths.length === 1) {
       // user may accidentally provide a folder within the repository
       // this ensures we use the repository root, if it is actually a repository
       // otherwise we consider it an untracked repository
       const first = paths[0]
-      const path = (await validatedRepositoryPath(first)) || first
+      const path = (await validatedRepositoryPath(first)) ?? first
 
-      const existingRepository = matchExistingRepository(
-        this.state.repositories,
-        path
-      )
+      const { repositories } = this.state
+      const existingRepository = matchExistingRepository(repositories, path)
 
       if (existingRepository) {
-        await this.props.dispatcher.selectRepository(existingRepository)
+        await dispatcher.selectRepository(existingRepository)
       } else {
-        await this.showPopup({
-          type: PopupType.AddRepository,
-          path,
-        })
+        await this.showPopup({ type: PopupType.AddRepository, path })
       }
     }
   }
@@ -1024,7 +1083,7 @@ export class App extends React.Component<IAppProps, IAppState> {
     }
 
     if (repository instanceof CloningRepository || repository.missing) {
-      this.props.dispatcher.removeRepositories([repository], false)
+      this.props.dispatcher.removeRepository(repository, false)
       return
     }
 
@@ -1034,15 +1093,15 @@ export class App extends React.Component<IAppProps, IAppState> {
         repository,
       })
     } else {
-      this.props.dispatcher.removeRepositories([repository], false)
+      this.props.dispatcher.removeRepository(repository, false)
     }
   }
 
-  private onConfirmRepoRemoval = (
+  private onConfirmRepoRemoval = async (
     repository: Repository,
     deleteRepoFromDisk: boolean
   ) => {
-    this.props.dispatcher.removeRepositories([repository], deleteRepoFromDisk)
+    await this.props.dispatcher.removeRepository(repository, deleteRepoFromDisk)
   }
 
   private getRepository(): Repository | CloningRepository | null {
@@ -1052,15 +1111,6 @@ export class App extends React.Component<IAppProps, IAppState> {
     }
 
     return state.repository
-  }
-
-  private async addRepositories(paths: ReadonlyArray<string>) {
-    const repositories = await this.props.dispatcher.addRepositories(paths)
-    if (repositories.length > 0) {
-      this.props.dispatcher.selectRepository(repositories[0])
-    }
-
-    return repositories
   }
 
   private showRebaseDialog() {
@@ -1094,12 +1144,28 @@ export class App extends React.Component<IAppProps, IAppState> {
     })
   }
 
-  private viewRepositoryOnGitHub() {
-    const url = this.getCurrentRepositoryGitHubURL()
+  /**
+   * Opens a browser to the issue creation page
+   * of the current GitHub repository.
+   */
+  private openIssueCreationOnGitHub() {
+    const repository = this.getRepository()
+    // this will likely never be null since we disable the
+    // issue creation menu item for non-GitHub repositories
+    if (repository instanceof Repository) {
+      this.props.dispatcher.openIssueCreationPage(repository)
+    }
+  }
 
-    if (url) {
-      this.props.dispatcher.openInBrowser(url)
-      return
+  private viewRepositoryOnGitHub() {
+    const repository = this.getRepository()
+
+    if (repository instanceof Repository) {
+      const url = getGitHubHtmlUrl(repository)
+
+      if (url) {
+        this.props.dispatcher.openInBrowser(url)
+      }
     }
   }
 
@@ -1228,17 +1294,13 @@ export class App extends React.Component<IAppProps, IAppState> {
     )
   }
 
-  private onPopupDismissed = () => this.props.dispatcher.closePopup()
-
-  private onSignInDialogDismissed = () => {
-    this.props.dispatcher.resetSignInState()
-    this.onPopupDismissed()
+  private onPopupDismissed = (popupType: PopupType) => {
+    return this.props.dispatcher.closePopup(popupType)
   }
 
   private onContinueWithUntrustedCertificate = (
     certificate: Electron.Certificate
   ) => {
-    this.props.dispatcher.closePopup()
     showCertificateTrustDialog(
       certificate,
       'Could not securely connect to the server, because its certificate is not trusted. Attackers might be trying to steal your information.\n\nTo connect unsafely, which may put your data at risk, you can “Always trust” the certificate and try again.'
@@ -1260,6 +1322,8 @@ export class App extends React.Component<IAppProps, IAppState> {
       return null
     }
 
+    const onPopupDismissedFn = this.getOnPopupDismissedFn(popup.type)
+
     switch (popup.type) {
       case PopupType.RenameBranch:
         const stash =
@@ -1274,7 +1338,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             repository={popup.repository}
             branch={popup.branch}
             stash={stash}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       case PopupType.DeleteBranch:
@@ -1285,7 +1349,18 @@ export class App extends React.Component<IAppProps, IAppState> {
             repository={popup.repository}
             branch={popup.branch}
             existsOnRemote={popup.existsOnRemote}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
+            onDeleted={this.onBranchDeleted}
+          />
+        )
+      case PopupType.DeleteRemoteBranch:
+        return (
+          <DeleteRemoteBranch
+            key="delete-remote-branch"
+            dispatcher={this.props.dispatcher}
+            repository={popup.repository}
+            branch={popup.branch}
+            onDismissed={onPopupDismissedFn}
             onDeleted={this.onBranchDeleted}
           />
         )
@@ -1310,11 +1385,29 @@ export class App extends React.Component<IAppProps, IAppState> {
             }
             showDiscardChangesSetting={showSetting}
             discardingAllChanges={discardingAllChanges}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             onConfirmDiscardChangesChanged={this.onConfirmDiscardChangesChanged}
           />
         )
+      case PopupType.ConfirmDiscardSelection:
+        return (
+          <DiscardSelection
+            key="discard-selection"
+            repository={popup.repository}
+            dispatcher={this.props.dispatcher}
+            file={popup.file}
+            diff={popup.diff}
+            selection={popup.selection}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
       case PopupType.Preferences:
+        let repository = this.getRepository()
+
+        if (repository instanceof CloningRepository) {
+          repository = null
+        }
+
         return (
           <Preferences
             key="preferences"
@@ -1328,13 +1421,15 @@ export class App extends React.Component<IAppProps, IAppState> {
               this.state.askForConfirmationOnDiscardChanges
             }
             confirmForcePush={this.state.askForConfirmationOnForcePush}
+            uncommittedChangesStrategy={this.state.uncommittedChangesStrategy}
             selectedExternalEditor={this.state.selectedExternalEditor}
             optOutOfUsageTracking={this.state.optOutOfUsageTracking}
             enterpriseAccount={this.getEnterpriseAccount()}
-            onDismissed={this.onPopupDismissed}
+            repository={repository}
+            onDismissed={onPopupDismissedFn}
             selectedShell={this.state.selectedShell}
             selectedTheme={this.state.selectedTheme}
-            automaticallySwitchTheme={this.state.automaticallySwitchTheme}
+            repositoryIndicatorsEnabled={this.state.repositoryIndicatorsEnabled}
           />
         )
       case PopupType.MergeBranch: {
@@ -1344,7 +1439,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         const tip = state.branchesState.tip
 
         // we should never get in this state since we disable the menu
-        // item in a detatched HEAD state, this check is so TSC is happy
+        // item in a detached HEAD state, this check is so TSC is happy
         if (tip.kind !== TipState.Valid) {
           return null
         }
@@ -1361,21 +1456,27 @@ export class App extends React.Component<IAppProps, IAppState> {
             recentBranches={state.branchesState.recentBranches}
             currentBranch={currentBranch}
             initialBranch={branch}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       }
       case PopupType.RepositorySettings: {
         const repository = popup.repository
         const state = this.props.repositoryStateManager.get(repository)
+        const repositoryAccount = getAccountForRepository(
+          this.state.accounts,
+          repository
+        )
 
         return (
           <RepositorySettings
-            key="repository-settings"
+            key={`repository-settings-${repository.hash}`}
+            initialSelectedTab={popup.initialSelectedTab}
             remote={state.remote}
             dispatcher={this.props.dispatcher}
             repository={repository}
-            onDismissed={this.onPopupDismissed}
+            repositoryAccount={repositoryAccount}
+            onDismissed={onPopupDismissedFn}
           />
         )
       }
@@ -1385,14 +1486,14 @@ export class App extends React.Component<IAppProps, IAppState> {
             key="sign-in"
             signInState={this.state.signInState}
             dispatcher={this.props.dispatcher}
-            onDismissed={this.onSignInDialogDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       case PopupType.AddRepository:
         return (
           <AddExistingRepository
             key="add-existing-repository"
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             dispatcher={this.props.dispatcher}
             path={popup.path}
           />
@@ -1401,7 +1502,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         return (
           <CreateRepository
             key="create-repository"
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             dispatcher={this.props.dispatcher}
             initialPath={popup.path}
           />
@@ -1413,7 +1514,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             dotComAccount={this.getDotComAccount()}
             enterpriseAccount={this.getEnterpriseAccount()}
             initialURL={popup.initialURL}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             dispatcher={this.props.dispatcher}
             selectedTab={this.state.selectedCloneRepositoryTab}
             onTabSelected={this.onCloneRepositoriesTabSelected}
@@ -1424,12 +1525,22 @@ export class App extends React.Component<IAppProps, IAppState> {
       case PopupType.CreateBranch: {
         const state = this.props.repositoryStateManager.get(popup.repository)
         const branchesState = state.branchesState
-        const currentBranchProtected = state.changesState.currentBranchProtected
         const repository = popup.repository
 
         if (branchesState.tip.kind === TipState.Unknown) {
-          this.props.dispatcher.closePopup()
+          onPopupDismissedFn()
           return null
+        }
+
+        let upstreamGhRepo: GitHubRepository | null = null
+        let upstreamDefaultBranch: Branch | null = null
+
+        if (isRepositoryWithGitHubRepository(repository)) {
+          upstreamGhRepo = getNonForkGitHubRepository(repository)
+          upstreamDefaultBranch = findDefaultUpstreamBranch(
+            repository,
+            branchesState.allBranches
+          )
         }
 
         return (
@@ -1437,12 +1548,14 @@ export class App extends React.Component<IAppProps, IAppState> {
             key="create-branch"
             tip={branchesState.tip}
             defaultBranch={branchesState.defaultBranch}
+            upstreamDefaultBranch={upstreamDefaultBranch}
             allBranches={branchesState.allBranches}
             repository={repository}
-            onDismissed={this.onPopupDismissed}
+            targetCommit={popup.targetCommit}
+            upstreamGitHubRepository={upstreamGhRepo}
+            onDismissed={onPopupDismissedFn}
             dispatcher={this.props.dispatcher}
             initialName={popup.initialName || ''}
-            currentBranchProtected={currentBranchProtected}
           />
         )
       }
@@ -1450,7 +1563,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         return (
           <InstallGit
             key="install-git"
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             onOpenShell={this.onOpenShellIgnoreWarning}
             path={popup.path}
           />
@@ -1461,9 +1574,10 @@ export class App extends React.Component<IAppProps, IAppState> {
         return (
           <About
             key="about"
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             applicationName={getName()}
             applicationVersion={version}
+            applicationArchitecture={process.arch}
             onCheckForUpdates={this.onCheckForUpdates}
             onShowAcknowledgements={this.showAcknowledgements}
             onShowTermsAndConditions={this.showTermsAndConditions}
@@ -1476,7 +1590,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
             accounts={this.state.accounts}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       case PopupType.UntrustedCertificate:
@@ -1485,7 +1599,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             key="untrusted-certificate"
             certificate={popup.certificate}
             url={popup.url}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             onContinue={this.onContinueWithUntrustedCertificate}
           />
         )
@@ -1493,7 +1607,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         return (
           <Acknowledgements
             key="acknowledgements"
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             applicationVersion={getVersion()}
           />
         )
@@ -1503,14 +1617,14 @@ export class App extends React.Component<IAppProps, IAppState> {
             key="confirm-remove-repository"
             repository={popup.repository}
             onConfirmation={this.onConfirmRepoRemoval}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       case PopupType.TermsAndConditions:
         return (
           <TermsAndConditions
             key="terms-and-conditions"
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       case PopupType.PushBranchCommits:
@@ -1522,38 +1636,35 @@ export class App extends React.Component<IAppProps, IAppState> {
             branch={popup.branch}
             unPushedCommits={popup.unPushedCommits}
             onConfirm={this.openCreatePullRequestInBrowser}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       case PopupType.CLIInstalled:
         return (
-          <CLIInstalled
-            key="cli-installed"
-            onDismissed={this.onPopupDismissed}
-          />
+          <CLIInstalled key="cli-installed" onDismissed={onPopupDismissedFn} />
         )
       case PopupType.GenericGitAuthentication:
         return (
           <GenericGitAuthentication
             key="generic-git-authentication"
             hostname={popup.hostname}
-            onDismiss={this.onPopupDismissed}
+            onDismiss={onPopupDismissedFn}
             onSave={this.onSaveCredentials}
             retryAction={popup.retryAction}
           />
         )
       case PopupType.ExternalEditorFailed:
         const openPreferences = popup.openPreferences
-        const suggestAtom = popup.suggestAtom
+        const suggestDefaultEditor = popup.suggestDefaultEditor
 
         return (
           <EditorError
             key="editor-error"
             message={popup.message}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             showPreferencesDialog={this.onShowAdvancedPreferences}
             viewPreferences={openPreferences}
-            suggestAtom={suggestAtom}
+            suggestDefaultEditor={suggestDefaultEditor}
           />
         )
       case PopupType.OpenShellFailed:
@@ -1561,7 +1672,7 @@ export class App extends React.Component<IAppProps, IAppState> {
           <ShellError
             key="shell-error"
             message={popup.message}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             showPreferencesDialog={this.onShowAdvancedPreferences}
           />
         )
@@ -1570,7 +1681,7 @@ export class App extends React.Component<IAppProps, IAppState> {
           <InitializeLFS
             key="initialize-lfs"
             repositories={popup.repositories}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             onInitialize={this.initializeLFS}
           />
         )
@@ -1578,7 +1689,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         return (
           <AttributeMismatch
             key="lsf-attribute-mismatch"
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             onUpdateExistingFilters={this.updateExistingLFSFilters}
           />
         )
@@ -1588,7 +1699,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             key="upstream-already-exists"
             repository={popup.repository}
             existingRemote={popup.existingRemote}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             onUpdate={this.onUpdateExistingUpstreamRemote}
             onIgnore={this.onIgnoreExistingUpstreamRemote}
           />
@@ -1599,7 +1710,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             key="release-notes"
             emoji={this.state.emoji}
             newRelease={popup.newRelease}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       case PopupType.DeletePullRequest:
@@ -1609,7 +1720,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
             branch={popup.branch}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             pullRequest={popup.pullRequest}
           />
         )
@@ -1631,19 +1742,53 @@ export class App extends React.Component<IAppProps, IAppState> {
           return null
         }
 
+        const { repository, ourBranch, theirBranch } = popup
+        const submit = __DARWIN__ ? 'Commit Merge' : 'Commit merge'
+        const abort = __DARWIN__ ? 'Abort Merge' : 'Abort merge'
+        const headerTitle = (
+          <span>
+            {`Resolve conflicts before merging`}
+            {theirBranch !== undefined && <strong> {theirBranch}</strong>}
+            {` into `}
+            <strong>{ourBranch}</strong>
+          </span>
+        )
         return (
-          <MergeConflictsDialog
+          <ConflictsDialog
             key="merge-conflicts-dialog"
             dispatcher={this.props.dispatcher}
-            repository={popup.repository}
+            repository={repository}
             workingDirectory={workingDirectory}
-            onDismissed={this.onPopupDismissed}
-            openFileInExternalEditor={this.openFileInExternalEditor}
+            userHasResolvedConflicts={false}
             resolvedExternalEditor={this.state.resolvedExternalEditor}
-            openRepositoryInShell={this.openInShell}
-            ourBranch={popup.ourBranch}
-            theirBranch={popup.theirBranch}
+            ourBranch={ourBranch}
+            theirBranch={theirBranch}
             manualResolutions={conflictState.manualResolutions}
+            headerTitle={headerTitle}
+            submitButton={submit}
+            abortButton={abort}
+            onSubmit={this.onMergeConflictsSubmit(
+              repository,
+              workingDirectory,
+              ourBranch,
+              theirBranch
+            )}
+            onAbort={this.onMergeConflictsCancel(
+              repository,
+              workingDirectory,
+              conflictState.manualResolutions,
+              ourBranch,
+              theirBranch
+            )}
+            onDismissed={this.onMergeConflictsDismissed(
+              repository,
+              workingDirectory,
+              conflictState.manualResolutions,
+              ourBranch,
+              theirBranch
+            )}
+            openFileInExternalEditor={this.openFileInExternalEditor}
+            openRepositoryInShell={this.openInShell}
           />
         )
       }
@@ -1652,7 +1797,7 @@ export class App extends React.Component<IAppProps, IAppState> {
           <OversizedFiles
             key="oversized-files"
             oversizedFiles={popup.oversizedFiles}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             dispatcher={this.props.dispatcher}
             context={popup.context}
             repository={popup.repository}
@@ -1680,20 +1825,12 @@ export class App extends React.Component<IAppProps, IAppState> {
             key="abort-merge-warning"
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             ourBranch={popup.ourBranch}
             theirBranch={popup.theirBranch}
           />
         )
       }
-      case PopupType.UsageReportingChanges:
-        return (
-          <UsageStatsChange
-            key="usage-stats-change"
-            onOpenUsageDataUrl={this.openUsageDataUrl}
-            onDismissed={this.onUsageReportingDismissed}
-          />
-        )
       case PopupType.CommitConflictsWarning:
         return (
           <CommitConflictsWarning
@@ -1702,7 +1839,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             files={popup.files}
             repository={popup.repository}
             context={popup.context}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       case PopupType.PushNeedsPull:
@@ -1711,7 +1848,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             key="push-needs-pull"
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       case PopupType.RebaseFlow: {
@@ -1724,11 +1861,18 @@ export class App extends React.Component<IAppProps, IAppState> {
           return null
         }
 
-        const { changesState, rebaseState } = selectedState.state
+        const {
+          changesState,
+          rebaseState,
+          multiCommitOperationState,
+        } = selectedState.state
         const { workingDirectory, conflictState } = changesState
         const { progress, step, userHasResolvedConflicts } = rebaseState
 
-        if (conflictState !== null && conflictState.kind === 'merge') {
+        if (
+          (conflictState !== null && conflictState.kind !== 'rebase') ||
+          multiCommitOperationState !== null
+        ) {
           log.warn(
             '[App] invalid state encountered - rebase flow should not be used when merge conflicts found'
           )
@@ -1749,6 +1893,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             openFileInExternalEditor={this.openFileInExternalEditor}
             dispatcher={this.props.dispatcher}
             onFlowEnded={this.onRebaseFlowEnded}
+            onDismissed={onPopupDismissedFn}
             workingDirectory={workingDirectory}
             progress={progress}
             step={step}
@@ -1773,7 +1918,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             repository={popup.repository}
             upstreamBranch={popup.upstreamBranch}
             askForConfirmationOnForcePush={askForConfirmationOnForcePush}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       }
@@ -1800,7 +1945,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             currentBranch={currentBranch}
             branchToCheckout={branchToCheckout}
             hasAssociatedStash={hasAssociatedStash}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       }
@@ -1808,11 +1953,11 @@ export class App extends React.Component<IAppProps, IAppState> {
         const { repository, branchToCheckout: branchToCheckout } = popup
         return (
           <OverwriteStash
-            key="overwite-stash"
+            key="overwrite-stash"
             dispatcher={this.props.dispatcher}
             repository={repository}
             branchToCheckout={branchToCheckout}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       }
@@ -1825,7 +1970,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             dispatcher={this.props.dispatcher}
             repository={repository}
             stash={stash}
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
           />
         )
       }
@@ -1833,11 +1978,10 @@ export class App extends React.Component<IAppProps, IAppState> {
         return (
           <CreateTutorialRepositoryDialog
             key="create-tutorial-repository-dialog"
-            dispatcher={this.props.dispatcher}
             account={popup.account}
-            onDismissed={this.onPopupDismissed}
-            onTutorialRepositoryCreated={this.onTutorialRepositoryCreated}
-            onError={this.onTutorialRepositoryError}
+            progress={popup.progress}
+            onDismissed={onPopupDismissedFn}
+            onCreateTutorialRepository={this.onCreateTutorialRepository}
           />
         )
       }
@@ -1845,7 +1989,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         return (
           <ConfirmExitTutorial
             key="confirm-exit-tutorial"
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             onContinue={this.onExitTutorialToHomeScreen}
           />
         )
@@ -1853,12 +1997,234 @@ export class App extends React.Component<IAppProps, IAppState> {
       case PopupType.PushRejectedDueToMissingWorkflowScope:
         return (
           <WorkflowPushRejectedDialog
-            onDismissed={this.onPopupDismissed}
+            onDismissed={onPopupDismissedFn}
             rejectedPath={popup.rejectedPath}
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
           />
         )
+      case PopupType.SAMLReauthRequired:
+        return (
+          <SAMLReauthRequiredDialog
+            onDismissed={onPopupDismissedFn}
+            organizationName={popup.organizationName}
+            endpoint={popup.endpoint}
+            retryAction={popup.retryAction}
+            dispatcher={this.props.dispatcher}
+          />
+        )
+      case PopupType.CreateFork:
+        return (
+          <CreateForkDialog
+            onDismissed={onPopupDismissedFn}
+            dispatcher={this.props.dispatcher}
+            repository={popup.repository}
+            account={popup.account}
+          />
+        )
+      case PopupType.CreateTag: {
+        return (
+          <CreateTag
+            key="create-tag"
+            repository={popup.repository}
+            onDismissed={onPopupDismissedFn}
+            dispatcher={this.props.dispatcher}
+            targetCommitSha={popup.targetCommitSha}
+            initialName={popup.initialName}
+            localTags={popup.localTags}
+          />
+        )
+      }
+      case PopupType.DeleteTag: {
+        return (
+          <DeleteTag
+            key="delete-tag"
+            repository={popup.repository}
+            onDismissed={onPopupDismissedFn}
+            dispatcher={this.props.dispatcher}
+            tagName={popup.tagName}
+          />
+        )
+      }
+      case PopupType.ChooseForkSettings: {
+        return (
+          <ChooseForkSettings
+            repository={popup.repository}
+            onDismissed={onPopupDismissedFn}
+            dispatcher={this.props.dispatcher}
+          />
+        )
+      }
+      case PopupType.LocalChangesOverwritten:
+        const selectedState = this.state.selectedState
+
+        const existingStash =
+          selectedState !== null &&
+          selectedState.type === SelectionType.Repository
+            ? selectedState.state.changesState.stashEntry
+            : null
+
+        return (
+          <LocalChangesOverwrittenDialog
+            repository={popup.repository}
+            dispatcher={this.props.dispatcher}
+            hasExistingStash={existingStash !== null}
+            retryAction={popup.retryAction}
+            onDismissed={onPopupDismissedFn}
+            files={popup.files}
+          />
+        )
+      case PopupType.CherryPick: {
+        const cherryPickState = this.getCherryPickState()
+        const workingDirectory = this.getWorkingDirectory()
+        if (
+          cherryPickState === null ||
+          cherryPickState.step == null ||
+          workingDirectory === null
+        ) {
+          log.warn(
+            `[App] Invalid state encountered:
+            cherry-pick flow should not be active when step is null,
+            the selected app state is not a repository state,
+            or cannot obtain the working directory.`
+          )
+          return null
+        }
+
+        const { step, progress, userHasResolvedConflicts } = cherryPickState
+
+        return (
+          <CherryPickFlow
+            key="cherry-pick-flow"
+            repository={popup.repository}
+            dispatcher={this.props.dispatcher}
+            onDismissed={onPopupDismissedFn}
+            step={step}
+            emoji={this.state.emoji}
+            progress={progress}
+            commits={popup.commits}
+            openFileInExternalEditor={this.openFileInExternalEditor}
+            workingDirectory={workingDirectory}
+            userHasResolvedConflicts={userHasResolvedConflicts}
+            resolvedExternalEditor={this.state.resolvedExternalEditor}
+            openRepositoryInShell={this.openCurrentRepositoryInShell}
+            sourceBranch={popup.sourceBranch}
+            onShowCherryPickConflictsBanner={
+              this.onShowCherryPickConflictsBanner
+            }
+          />
+        )
+      }
+      case PopupType.MoveToApplicationsFolder: {
+        return (
+          <MoveToApplicationsFolder
+            dispatcher={this.props.dispatcher}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      }
+      case PopupType.ChangeRepositoryAlias: {
+        return (
+          <ChangeRepositoryAlias
+            dispatcher={this.props.dispatcher}
+            repository={popup.repository}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      }
+      case PopupType.ThankYou:
+        return (
+          <ThankYou
+            key="thank-you"
+            emoji={this.state.emoji}
+            userContributions={popup.userContributions}
+            friendlyName={popup.friendlyName}
+            latestVersion={popup.latestVersion}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      case PopupType.CommitMessage:
+        const repositoryState = this.props.repositoryStateManager.get(
+          popup.repository
+        )
+
+        const { tip } = repositoryState.branchesState
+        const currentBranchName: string | null =
+          tip.kind === TipState.Valid ? tip.branch.name : null
+
+        const hasWritePermissionForRepository =
+          popup.repository.gitHubRepository === null ||
+          hasWritePermission(popup.repository.gitHubRepository)
+
+        const autocompletionProviders = buildAutocompletionProviders(
+          popup.repository,
+          this.props.dispatcher,
+          this.state.emoji,
+          this.props.issuesStore,
+          this.props.gitHubUserStore,
+          this.state.accounts
+        )
+
+        return (
+          <CommitMessageDialog
+            key="commit-message"
+            autocompletionProviders={autocompletionProviders}
+            branch={currentBranchName}
+            coAuthors={popup.coAuthors}
+            commitAuthor={repositoryState.commitAuthor}
+            commitMessage={popup.commitMessage}
+            commitSpellcheckEnabled={this.state.commitSpellcheckEnabled}
+            dialogButtonText={popup.dialogButtonText}
+            dialogTitle={popup.dialogTitle}
+            dispatcher={this.props.dispatcher}
+            prepopulateCommitSummary={popup.prepopulateCommitSummary}
+            repository={popup.repository}
+            showBranchProtected={
+              repositoryState.changesState.currentBranchProtected
+            }
+            showCoAuthoredBy={popup.showCoAuthoredBy}
+            showNoWriteAccess={!hasWritePermissionForRepository}
+            onDismissed={onPopupDismissedFn}
+            onSubmitCommitMessage={popup.onSubmitCommitMessage}
+          />
+        )
+      case PopupType.MultiCommitOperation: {
+        const { selectedState, emoji } = this.state
+
+        if (
+          selectedState === null ||
+          selectedState.type !== SelectionType.Repository
+        ) {
+          return null
+        }
+
+        const { changesState, multiCommitOperationState } = selectedState.state
+        const { workingDirectory, conflictState } = changesState
+        if (multiCommitOperationState === null) {
+          log.warn(
+            '[App] invalid state encountered - multi commit flow should not be active when step is null'
+          )
+          return null
+        }
+
+        return (
+          <MultiCommitOperation
+            key="multi-commit-operation"
+            repository={popup.repository}
+            dispatcher={this.props.dispatcher}
+            state={multiCommitOperationState}
+            conflictState={conflictState}
+            emoji={emoji}
+            workingDirectory={workingDirectory}
+            askForConfirmationOnForcePush={
+              this.state.askForConfirmationOnForcePush
+            }
+            openFileInExternalEditor={this.openFileInExternalEditor}
+            resolvedExternalEditor={this.state.resolvedExternalEditor}
+            openRepositoryInShell={this.openCurrentRepositoryInShell}
+          />
+        )
+      }
       default:
         return assertNever(popup, `Unknown popup type: ${popup}`)
     }
@@ -1867,28 +2233,15 @@ export class App extends React.Component<IAppProps, IAppState> {
   private onExitTutorialToHomeScreen = () => {
     const tutorialRepository = this.getSelectedTutorialRepository()
     if (!tutorialRepository) {
-      return
+      return false
     }
 
     this.props.dispatcher.pauseTutorial(tutorialRepository)
-    this.props.dispatcher.closePopup()
+    return true
   }
 
-  private onTutorialRepositoryError = (error: Error) => {
-    this.props.dispatcher.closePopup(PopupType.CreateTutorialRepository)
-    this.props.dispatcher.postError(error)
-  }
-
-  private onTutorialRepositoryCreated = (
-    path: string,
-    account: Account,
-    apiRepository: IAPIRepository
-  ) => {
-    return this.props.dispatcher.addTutorialRepository(
-      path,
-      account.endpoint,
-      apiRepository
-    )
+  private onCreateTutorialRepository = (account: Account) => {
+    this.props.dispatcher.createTutorialRepository(account)
   }
 
   private onShowRebaseConflictsBanner = (
@@ -1904,9 +2257,9 @@ export class App extends React.Component<IAppProps, IAppState> {
         )
         const { conflictState } = changesState
 
-        if (conflictState === null || conflictState.kind === 'merge') {
+        if (conflictState === null || !isRebaseConflictState(conflictState)) {
           log.debug(
-            `[App.onShowRebasConflictsBanner] no conflict state found, ignoring...`
+            `[App.onShowRebaseConflictsBanner] no rebase conflict state found, ignoring...`
           )
           return
         }
@@ -1928,19 +2281,7 @@ export class App extends React.Component<IAppProps, IAppState> {
   }
 
   private onRebaseFlowEnded = (repository: Repository) => {
-    this.props.dispatcher.closePopup()
     this.props.dispatcher.endRebaseFlow(repository)
-  }
-
-  private onUsageReportingDismissed = (optOut: boolean) => {
-    this.props.appStore.setStatsOptOut(optOut, true)
-    this.props.appStore.markUsageStatsNoteSeen()
-    this.onPopupDismissed()
-    this.props.appStore._reportStats()
-  }
-
-  private openUsageDataUrl = () => {
-    this.props.dispatcher.openInBrowser(SamplesURL)
   }
 
   private onUpdateExistingUpstreamRemote = (repository: Repository) => {
@@ -1953,12 +2294,10 @@ export class App extends React.Component<IAppProps, IAppState> {
 
   private updateExistingLFSFilters = () => {
     this.props.dispatcher.installGlobalLFSFilters(true)
-    this.onPopupDismissed()
   }
 
   private initializeLFS = (repositories: ReadonlyArray<Repository>) => {
     this.props.dispatcher.installLFSHooks(repositories)
-    this.onPopupDismissed()
   }
 
   private onCloneRepositoriesTabSelected = (tab: CloneRepositoryTab) => {
@@ -1978,7 +2317,6 @@ export class App extends React.Component<IAppProps, IAppState> {
 
   private onOpenShellIgnoreWarning = (path: string) => {
     this.props.dispatcher.openShell(path, true)
-    this.onPopupDismissed()
   }
 
   private onSaveCredentials = async (
@@ -1987,8 +2325,6 @@ export class App extends React.Component<IAppProps, IAppState> {
     password: string,
     retryAction: RetryAction
   ) => {
-    this.onPopupDismissed()
-
     await this.props.dispatcher.saveGenericGitCredentials(
       hostname,
       username,
@@ -2009,16 +2345,50 @@ export class App extends React.Component<IAppProps, IAppState> {
   }
 
   private renderPopup() {
+    const popupContent = this.currentPopupContent()
+
     return (
-      <CSSTransitionGroup
-        transitionName="modal"
-        component="div"
-        transitionEnterTimeout={dialogTransitionEnterTimeout}
-        transitionLeaveTimeout={dialogTransitionLeaveTimeout}
-      >
-        {this.currentPopupContent()}
-      </CSSTransitionGroup>
+      <TransitionGroup>
+        {popupContent && (
+          <CSSTransition classNames="modal" timeout={dialogTransitionTimeout}>
+            {popupContent}
+          </CSSTransition>
+        )}
+      </TransitionGroup>
     )
+  }
+
+  private renderDragElement() {
+    return <div id="dragElement">{this.renderCurrentDragElement()}</div>
+  }
+
+  /**
+   * Render the current drag element based on it's type. Used in conjunction
+   * with the `Draggable` component.
+   */
+  private renderCurrentDragElement(): JSX.Element | null {
+    const { currentDragElement, emoji } = this.state
+    if (currentDragElement === null) {
+      return null
+    }
+
+    const { gitHubRepository, commit, selectedCommits } = currentDragElement
+    switch (currentDragElement.type) {
+      case DragType.Commit:
+        return (
+          <CommitDragElement
+            gitHubRepository={gitHubRepository}
+            commit={commit}
+            selectedCommits={selectedCommits}
+            emoji={emoji}
+          />
+        )
+      default:
+        return assertNever(
+          currentDragElement.type,
+          `Unknown drag element type: ${currentDragElement}`
+        )
+    }
   }
 
   private renderZoomInfo() {
@@ -2041,22 +2411,43 @@ export class App extends React.Component<IAppProps, IAppState> {
         errors={this.state.errors}
         onClearError={this.clearError}
         onShowPopup={this.showPopup}
+        onRetryAction={this.onRetryAction}
       />
     )
+  }
+
+  private onRetryAction = (retryAction: RetryAction) => {
+    this.props.dispatcher.performRetry(retryAction)
   }
 
   private showPopup = (popup: Popup) => {
     this.props.dispatcher.showPopup(popup)
   }
 
+  private getDesktopAppContentsClassNames = (): string => {
+    const { currentDragElement } = this.state
+    const isCommitBeingDragged =
+      currentDragElement !== null && currentDragElement.type === DragType.Commit
+    return classNames({
+      'commit-being-dragged': isCommitBeingDragged,
+      // 'squashing-enabled' is due to feature flagging. If feature flag is
+      // removed, we can just delete this line with adjustment to the css file
+      'squashing-enabled': isCommitBeingDragged && enableSquashing(),
+    })
+  }
+
   private renderApp() {
     return (
-      <div id="desktop-app-contents">
+      <div
+        id="desktop-app-contents"
+        className={this.getDesktopAppContentsClassNames()}
+      >
         {this.renderToolbar()}
         {this.renderBanner()}
         {this.renderRepository()}
         {this.renderPopup()}
         {this.renderAppError()}
+        {this.renderDragElement()}
       </div>
     )
   }
@@ -2120,7 +2511,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       return
     }
 
-    shell.showItemInFolder(repository.path)
+    shell.showFolderContents(repository.path)
   }
 
   private onRepositoryDropdownStateChanged = (newState: DropdownState) => {
@@ -2155,8 +2546,9 @@ export class App extends React.Component<IAppProps, IAppState> {
     let icon: OcticonSymbol
     let title: string
     if (repository) {
+      const alias = repository instanceof Repository ? repository.alias : null
       icon = iconForRepository(repository)
-      title = repository.name
+      title = alias ?? repository.name
     } else if (this.state.repositories.length > 0) {
       icon = OcticonSymbol.repo
       title = __DARWIN__ ? 'Select a Repository' : 'Select a repository'
@@ -2219,8 +2611,8 @@ export class App extends React.Component<IAppProps, IAppState> {
     const { aheadBehind, branchesState } = state
     const { pullWithRebase, tip } = branchesState
 
-    if (tip.kind === TipState.Valid && tip.branch.remote !== null) {
-      remoteName = tip.branch.remote
+    if (tip.kind === TipState.Valid && tip.branch.upstreamRemoteName !== null) {
+      remoteName = tip.branch.upstreamRemoteName
     }
 
     const isForcePush = isCurrentBranchForcePush(branchesState, aheadBehind)
@@ -2230,6 +2622,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         dispatcher={this.props.dispatcher}
         repository={selection.repository}
         aheadBehind={state.aheadBehind}
+        numTagsToPush={state.tagsToPush !== null ? state.tagsToPush.length : 0}
         remoteName={remoteName}
         lastFetched={state.lastFetched}
         networkActionInProgress={state.isPushPullFetchInProgress}
@@ -2263,13 +2656,9 @@ export class App extends React.Component<IAppProps, IAppState> {
 
     const repository = selection.repository
 
-    const state = this.props.repositoryStateManager.get(repository)
-    const currentBranchProtected = state.changesState.currentBranchProtected
-
     return this.props.dispatcher.showPopup({
       type: PopupType.CreateBranch,
       repository,
-      currentBranchProtected,
     })
   }
 
@@ -2319,7 +2708,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       currentFoldout !== null && currentFoldout.type === FoldoutType.Branch
 
     const repository = selection.repository
-    const branchesState = selection.state.branchesState
+    const { branchesState } = selection.state
 
     return (
       <BranchDropdown
@@ -2360,14 +2749,13 @@ export class App extends React.Component<IAppProps, IAppState> {
       banner = this.renderUpdateBanner()
     }
     return (
-      <CSSTransitionGroup
-        transitionName="banner"
-        component="div"
-        transitionEnterTimeout={500}
-        transitionLeaveTimeout={400}
-      >
-        {banner}
-      </CSSTransitionGroup>
+      <TransitionGroup>
+        {banner && (
+          <CSSTransition classNames="banner" timeout={bannerTransitionTimeout}>
+            {banner}
+          </CSSTransition>
+        )}
+      </TransitionGroup>
     )
   }
 
@@ -2418,7 +2806,7 @@ export class App extends React.Component<IAppProps, IAppState> {
           onCreate={this.showCreateRepository}
           onClone={this.showCloneRepo}
           onAdd={this.showAddLocalRepo}
-          onCreateTutorialRepository={this.onCreateTutorialRepository}
+          onCreateTutorialRepository={this.showCreateTutorialRepositoryPopup}
           onResumeTutorialRepository={this.onResumeTutorialRepository}
           tutorialPaused={this.isTutorialPaused()}
           apiRepositories={state.apiRepositories}
@@ -2439,6 +2827,9 @@ export class App extends React.Component<IAppProps, IAppState> {
 
       return (
         <RepositoryView
+          // When switching repositories we want to remount the RepositoryView
+          // component to reset the scroll positions.
+          key={selectedState.repository.hash}
           repository={selectedState.repository}
           state={selectedState.state}
           dispatcher={this.props.dispatcher}
@@ -2450,7 +2841,9 @@ export class App extends React.Component<IAppProps, IAppState> {
           gitHubUserStore={this.props.gitHubUserStore}
           onViewCommitOnGitHub={this.onViewCommitOnGitHub}
           imageDiffType={state.imageDiffType}
-          hideWhitespaceInDiff={state.hideWhitespaceInDiff}
+          hideWhitespaceInChangesDiff={state.hideWhitespaceInChangesDiff}
+          hideWhitespaceInHistoryDiff={state.hideWhitespaceInHistoryDiff}
+          showSideBySideDiff={state.showSideBySideDiff}
           focusCommitMessage={state.focusCommitMessage}
           askForConfirmationOnDiscardChanges={
             state.askForConfirmationOnDiscardChanges
@@ -2462,6 +2855,12 @@ export class App extends React.Component<IAppProps, IAppState> {
           appMenu={state.appMenuState[0]}
           currentTutorialStep={state.currentOnboardingTutorialStep}
           onExitTutorial={this.onExitTutorial}
+          isShowingModal={this.isShowingModal}
+          isShowingFoldout={this.state.currentFoldout !== null}
+          aheadBehindStore={this.props.aheadBehindStore}
+          commitSpellcheckEnabled={this.state.commitSpellcheckEnabled}
+          onCherryPick={this.startCherryPickWithoutBranch}
+          hasShownCherryPickIntro={this.state.hasShownCherryPickIntro}
         />
       )
     } else if (selectedState.type === SelectionType.CloningRepository) {
@@ -2503,7 +2902,7 @@ export class App extends React.Component<IAppProps, IAppState> {
 
     const currentTheme = this.state.showWelcomeFlow
       ? ApplicationTheme.Light
-      : this.state.selectedTheme
+      : this.state.currentTheme
 
     return (
       <div id="desktop-app-chrome" className={className}>
@@ -2561,6 +2960,302 @@ export class App extends React.Component<IAppProps, IAppState> {
 
   private isTutorialPaused() {
     return this.state.currentOnboardingTutorialStep === TutorialStep.Paused
+  }
+
+  /**
+   * When starting cherry pick from context menu, we need to initialize the
+   * cherry pick state flow step with the ChooseTargetBranch as opposed
+   * to drag and drop which will start at the ShowProgress step.
+   *
+   * Step initialization must be done before and outside of the
+   * `currentPopupContent` method because it is a rendering method that is
+   * re-run on every update. It will just keep showing the step initialized
+   * there otherwise - not allowing for other flow steps.
+   */
+  private startCherryPickWithoutBranch = (
+    repository: Repository,
+    commits: ReadonlyArray<CommitOneLine>
+  ) => {
+    const repositoryState = this.props.repositoryStateManager.get(repository)
+
+    const {
+      defaultBranch,
+      allBranches,
+      recentBranches,
+      tip,
+    } = repositoryState.branchesState
+    let currentBranch: Branch | null = null
+
+    if (tip.kind === TipState.Valid) {
+      currentBranch = tip.branch
+    } else {
+      throw new Error(
+        'Tip is not in a valid state, which is required to start the cherry-pick flow'
+      )
+    }
+
+    const initialStep: ChooseTargetBranchesStep = {
+      kind: CherryPickStepKind.ChooseTargetBranch,
+      defaultBranch,
+      currentBranch,
+      allBranches,
+      recentBranches,
+    }
+
+    this.props.dispatcher.setCherryPickFlowStep(repository, initialStep)
+    this.props.dispatcher.recordCherryPickViaContextMenu()
+
+    this.showPopup({
+      type: PopupType.CherryPick,
+      repository,
+      commits,
+      sourceBranch: currentBranch,
+    })
+  }
+
+  private getCherryPickState(): ICherryPickState | null {
+    const { selectedState } = this.state
+    if (
+      selectedState === null ||
+      selectedState.type !== SelectionType.Repository
+    ) {
+      return null
+    }
+
+    const { cherryPickState } = selectedState.state
+    return cherryPickState
+  }
+
+  private onShowCherryPickConflictsBanner = (
+    repository: Repository,
+    targetBranchName: string,
+    sourceBranch: Branch | null,
+    commits: ReadonlyArray<CommitOneLine>
+  ) => {
+    this.props.dispatcher.setCherryPickFlowStep(repository, {
+      kind: CherryPickStepKind.HideConflicts,
+    })
+
+    this.props.dispatcher.setBanner({
+      type: BannerType.CherryPickConflictsFound,
+      targetBranchName,
+      onOpenConflictsDialog: async () => {
+        const { changesState } = this.props.repositoryStateManager.get(
+          repository
+        )
+        const { conflictState } = changesState
+
+        if (
+          conflictState === null ||
+          !isCherryPickConflictState(conflictState)
+        ) {
+          log.debug(
+            `[App.onShowCherryPickConflictsBanner] no cherry-pick conflict state found, ignoring...`
+          )
+          return
+        }
+
+        await this.props.dispatcher.setCherryPickProgressFromState(repository)
+
+        this.props.dispatcher.setCherryPickFlowStep(repository, {
+          kind: CherryPickStepKind.ShowConflicts,
+          conflictState,
+        })
+
+        this.props.dispatcher.showPopup({
+          type: PopupType.CherryPick,
+          repository,
+          commits,
+          sourceBranch,
+        })
+      },
+    })
+  }
+
+  private getWorkingDirectory(): WorkingDirectoryStatus | null {
+    const { selectedState } = this.state
+    if (
+      selectedState === null ||
+      selectedState.type !== SelectionType.Repository
+    ) {
+      return null
+    }
+    return selectedState.state.changesState.workingDirectory
+  }
+
+  /**
+   * Check if the user signed into their dotCom account has been tagged in
+   * our release notes or if they already have received a thank you card.
+   *
+   * Notes: A user signed into a GHE account should not be contributing to
+   * Desktop as that account should be used for GHE repos. Tho, technically it
+   * is possible through commit misattribution and we are intentionally ignoring
+   * this scenario as it would be expected any misattributed commit would not
+   * be able to be detected.
+   */
+  private async checkIfThankYouIsInOrder(): Promise<void> {
+    const dotComAccount = this.getDotComAccount()
+    if (dotComAccount === null) {
+      // The user is not signed in or is a GHE user who should not have any.
+      return
+    }
+
+    const { lastThankYou } = this.state
+    const { login } = dotComAccount
+    if (hasUserAlreadyBeenCheckedOrThanked(lastThankYou, login, getVersion())) {
+      return
+    }
+
+    const isOnlyLastRelease =
+      lastThankYou !== undefined && lastThankYou.checkedUsers.includes(login)
+    const userContributions = await getUserContributions(
+      isOnlyLastRelease,
+      login
+    )
+    if (userContributions === null) {
+      // This will prevent unnecessary release note retrieval on every time the
+      // app is opened for a non-contributor.
+      updateLastThankYou(
+        this.props.dispatcher,
+        lastThankYou,
+        login,
+        getVersion()
+      )
+      return
+    }
+
+    // If this is the first time user has seen the card, we want to thank them
+    // for all previous versions. Thus, only specify current version if they
+    // have been thanked before.
+    const displayVersion = isOnlyLastRelease ? getVersion() : null
+    const banner: Banner = {
+      type: BannerType.OpenThankYouCard,
+      // Grab emoji's by reference because we could still be loading emoji's
+      emoji: this.state.emoji,
+      onOpenCard: () =>
+        this.openThankYouCard(userContributions, displayVersion),
+      onThrowCardAway: () => {
+        updateLastThankYou(
+          this.props.dispatcher,
+          lastThankYou,
+          login,
+          getVersion()
+        )
+      },
+    }
+    this.props.dispatcher.setBanner(banner)
+  }
+
+  private openThankYouCard = (
+    userContributions: ReadonlyArray<ReleaseNote>,
+    latestVersion: string | null = null
+  ) => {
+    const dotComAccount = this.getDotComAccount()
+
+    if (dotComAccount === null) {
+      // The user is not signed in or is a GHE user who should not have any.
+      return
+    }
+    const { friendlyName } = dotComAccount
+
+    this.props.dispatcher.showPopup({
+      type: PopupType.ThankYou,
+      userContributions,
+      friendlyName,
+      latestVersion,
+    })
+  }
+
+  private onMergeConflictsDismissed = (
+    repository: Repository,
+    workingDirectory: WorkingDirectoryStatus,
+    manualResolutions: Map<string, ManualConflictResolution>,
+    ourBranch: string,
+    theirBranch?: string
+  ) => {
+    return async () => {
+      this.props.dispatcher.closePopup()
+      this.props.dispatcher.setBanner({
+        type: BannerType.MergeConflictsFound,
+        ourBranch,
+        popup: {
+          type: PopupType.MergeConflicts,
+          ourBranch,
+          theirBranch,
+          repository,
+        },
+      })
+      this.props.dispatcher.recordMergeConflictsDialogDismissal()
+      const anyConflictedFiles =
+        getConflictedFiles(workingDirectory, manualResolutions).length > 0
+      if (anyConflictedFiles) {
+        this.props.dispatcher.recordAnyConflictsLeftOnMergeConflictsDialogDismissal()
+      }
+    }
+  }
+
+  private onMergeConflictsCancel = (
+    repository: Repository,
+    workingDirectory: WorkingDirectoryStatus,
+    manualResolutions: Map<string, ManualConflictResolution>,
+    ourBranch: string,
+    theirBranch?: string
+  ) => {
+    return async () => {
+      const anyResolvedFiles =
+        getResolvedFiles(workingDirectory, manualResolutions).length > 0
+
+      if (anyResolvedFiles) {
+        this.props.dispatcher.showPopup({
+          type: PopupType.AbortMerge,
+          repository,
+          ourBranch,
+          theirBranch,
+        })
+        return
+      }
+
+      await this.props.dispatcher.abortMerge(repository)
+      this.props.dispatcher.closePopup()
+    }
+  }
+
+  private onMergeConflictsSubmit = (
+    repository: Repository,
+    workingDirectory: WorkingDirectoryStatus,
+    ourBranch: string,
+    theirBranch?: string
+  ) => {
+    return async () => {
+      await this.props.dispatcher.finishConflictedMerge(
+        repository,
+        workingDirectory,
+        {
+          type: BannerType.SuccessfulMerge,
+          ourBranch,
+          theirBranch,
+        }
+      )
+      await this.props.dispatcher.setCommitMessage(
+        repository,
+        DefaultCommitMessage
+      )
+      await this.props.dispatcher.changeRepositorySection(
+        repository,
+        RepositorySectionTab.Changes
+      )
+      this.props.dispatcher.closePopup()
+      this.props.dispatcher.recordGuidedConflictedMergeCompletion()
+    }
+  }
+
+  private onDragEnd = (dropTargetSelector: DropTargetSelector | undefined) => {
+    this.props.dispatcher.closeFoldout(FoldoutType.Branch)
+    if (dropTargetSelector === undefined) {
+      // TODO: refactor to "DragStartedAndCanceled" as not specific to
+      // cherry-picking anymore
+      this.props.dispatcher.recordCherryPickDragStartedAndCanceled()
+    }
   }
 }
 

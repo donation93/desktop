@@ -7,8 +7,13 @@ import {
   CheckoutProgressParser,
   executionOptionsWithProgress,
 } from '../progress'
-import { envForAuthentication, AuthenticationErrors } from './authentication'
+import { AuthenticationErrors } from './authentication'
 import { enableRecurseSubmodulesFlag } from '../feature-flag'
+import { getFallbackUrlForProxyResolve } from './environment'
+import { WorkingDirectoryFileChange } from '../../models/status'
+import { ManualConflictResolution } from '../../models/manual-conflict-resolution'
+import { merge } from '../merge'
+import { withTrampolineEnvForRemoteOperation } from '../trampoline/trampoline-environment'
 
 export type ProgressCallback = (progress: ICheckoutProgress) => void
 
@@ -63,7 +68,6 @@ export async function checkoutBranch(
   progressCallback?: ProgressCallback
 ): Promise<true> {
   let opts: IGitExecutionOptions = {
-    env: envForAuthentication(account),
     expectedErrors: AuthenticationErrors,
   }
 
@@ -96,7 +100,17 @@ export async function checkoutBranch(
     progressCallback
   )
 
-  await git(args, repository.path, 'checkoutBranch', opts)
+  await withTrampolineEnvForRemoteOperation(
+    account,
+    getFallbackUrlForProxyResolve(account, repository),
+    env => {
+      return git(args, repository.path, 'checkoutBranch', {
+        ...opts,
+        env: merge(opts.env, env),
+      })
+    }
+  )
+
   // we return `true` here so `GitStore.performFailableGitOperation`
   // will return _something_ differentiable from `undefined` if this succeeds
   return true
@@ -111,5 +125,21 @@ export async function checkoutPaths(
     ['checkout', 'HEAD', '--', ...paths],
     repository.path,
     'checkoutPaths'
+  )
+}
+
+/**
+ * Check out either stage #2 (ours) or #3 (theirs) for a conflicted
+ * file.
+ */
+export async function checkoutConflictedFile(
+  repository: Repository,
+  file: WorkingDirectoryFileChange,
+  resolution: ManualConflictResolution
+) {
+  await git(
+    ['checkout', `--${resolution}`, '--', file.path],
+    repository.path,
+    'checkoutConflictedFile'
   )
 }

@@ -1,21 +1,21 @@
-import React = require('react')
+import * as React from 'react'
 import { Dialog, DialogContent, DialogFooter } from '../dialog'
 import { Repository } from '../../models/repository'
 import { Branch } from '../../models/branch'
 import { Dispatcher } from '../dispatcher'
 import { Row } from '../lib/row'
-import { stashOnCurrentBranch } from '../../models/uncommitted-changes-strategy'
 import { OkCancelButtonGroup } from '../dialog/ok-cancel-button-group'
+import { UncommittedChangesStrategy } from '../../models/uncommitted-changes-strategy'
 
 interface IOverwriteStashProps {
   readonly dispatcher: Dispatcher
   readonly repository: Repository
-  readonly branchToCheckout: Branch
+  readonly branchToCheckout: Branch | null
   readonly onDismissed: () => void
 }
 
 interface IOverwriteStashState {
-  readonly isCheckingOutBranch: boolean
+  readonly isLoading: boolean
 }
 
 /**
@@ -27,10 +27,7 @@ export class OverwriteStash extends React.Component<
 > {
   public constructor(props: IOverwriteStashProps) {
     super(props)
-
-    this.state = {
-      isCheckingOutBranch: false,
-    }
+    this.state = { isLoading: false }
   }
 
   public render() {
@@ -41,8 +38,8 @@ export class OverwriteStash extends React.Component<
         id="overwrite-stash"
         type="warning"
         title={title}
-        loading={this.state.isCheckingOutBranch}
-        disabled={this.state.isCheckingOutBranch}
+        loading={this.state.isLoading}
+        disabled={this.state.isLoading}
         onSubmit={this.onSubmit}
         onDismissed={this.props.onDismissed}
       >
@@ -61,21 +58,17 @@ export class OverwriteStash extends React.Component<
 
   private onSubmit = async () => {
     const { dispatcher, repository, branchToCheckout, onDismissed } = this.props
-
-    this.setState({
-      isCheckingOutBranch: true,
-    })
+    this.setState({ isLoading: true })
 
     try {
-      await dispatcher.checkoutBranch(
-        repository,
-        branchToCheckout,
-        stashOnCurrentBranch
-      )
+      if (branchToCheckout !== null) {
+        const strategy = UncommittedChangesStrategy.StashOnCurrentBranch
+        await dispatcher.checkoutBranch(repository, branchToCheckout, strategy)
+      } else {
+        await dispatcher.createStashForCurrentBranch(repository, false)
+      }
     } finally {
-      this.setState({
-        isCheckingOutBranch: false,
-      })
+      this.setState({ isLoading: false })
     }
 
     onDismissed()

@@ -1,3 +1,4 @@
+/* eslint-disable no-sync */
 import * as distInfo from './dist-info'
 import * as gitInfo from '../app/git-info'
 import * as packageInfo from '../app/package-info'
@@ -26,10 +27,10 @@ import * as Fs from 'fs'
 import { execSync } from 'child_process'
 import * as AWS from 'aws-sdk'
 import * as Crypto from 'crypto'
-import * as request from 'request'
+import request from 'request'
 
 console.log('Packaging…')
-execSync('yarn package')
+execSync('yarn package', { stdio: 'inherit' })
 
 const sha = platforms.getSha().substr(0, 8)
 
@@ -57,7 +58,7 @@ if (process.platform === 'darwin') {
 
 uploadPromise!
   .then(artifacts => {
-    const names = artifacts.map(function(item, index) {
+    const names = artifacts.map(function (item, index) {
       return item.name
     })
     console.log(`Uploaded artifacts: ${names}`)
@@ -74,6 +75,8 @@ function uploadOSXAssets() {
 }
 
 function uploadWindowsAssets() {
+  // For the nuget packages, include the architecture infix in the asset name
+  // when they're uploaded.
   const uploads = [
     upload(
       distInfo.getWindowsInstallerName(),
@@ -84,15 +87,21 @@ function uploadWindowsAssets() {
       distInfo.getWindowsStandalonePath()
     ),
     upload(
-      distInfo.getWindowsFullNugetPackageName(),
+      distInfo.getWindowsFullNugetPackageName(true),
       distInfo.getWindowsFullNugetPackagePath()
     ),
   ]
 
-  if (distInfo.shouldMakeDelta()) {
+  // Even if we should make a delta, it might not exist (if it's the first time
+  // we publish a nuget package of the app... for example, when we added support
+  // for ARM64).
+  if (
+    distInfo.shouldMakeDelta() &&
+    Fs.existsSync(distInfo.getWindowsDeltaNugetPackagePath())
+  ) {
     uploads.push(
       upload(
-        distInfo.getWindowsDeltaNugetPackageName(),
+        distInfo.getWindowsDeltaNugetPackageName(true),
         distInfo.getWindowsDeltaNugetPackagePath()
       )
     )
@@ -160,10 +169,20 @@ function createSignature(body: any, secret: string) {
   return `sha1=${hmac.digest('hex')}`
 }
 
-function updateDeploy(artifacts: ReadonlyArray<IUploadResult>, secret: string) {
+function getContext() {
+  return (
+    process.platform +
+    (distInfo.getDistArchitecture() === 'arm64' ? '-arm64' : '')
+  )
+}
+
+function updateDeploy(
+  artifacts: ReadonlyArray<IUploadResult>,
+  secret: string
+): Promise<void> {
   const { rendererSize, mainSize } = distInfo.getBundleSizes()
   const body = {
-    context: process.platform,
+    context: getContext(),
     branch_name: platforms.getReleaseBranchName(),
     artifacts,
     stats: {

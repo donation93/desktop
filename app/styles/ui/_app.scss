@@ -22,6 +22,87 @@
   &-contents {
     display: flex;
     flex-direction: column;
-    flex-grow: 1;
+    flex: 1 1 auto;
+    height: 100%;
+    min-height: 0;
+  }
+}
+
+#desktop-app-contents {
+  &.commit-being-dragged {
+    :not(input):not(textarea),
+    :not(input):not(textarea)::after,
+    :not(input):not(textarea)::before {
+      cursor: not-allowed;
+    }
+
+    #desktop-app-toolbar {
+      .toolbar-dropdown {
+        &.branch-button {
+          :not(input):not(textarea),
+          :not(input):not(textarea)::after,
+          :not(input):not(textarea)::before {
+            cursor: default;
+          }
+
+          .branches-list-item {
+            div {
+              pointer-events: none;
+            }
+          }
+
+          .list-item:not(.selected) {
+            .branches-list-item:hover,
+            .pull-request-item:hover {
+              --text-color: var(--box-selected-active-text-color);
+              --text-secondary-color: var(--box-selected-active-text-color);
+
+              color: var(--text-color);
+              background-color: var(--box-selected-active-background-color);
+              cursor: copy;
+            }
+          }
+
+          .branches-list-item.new-branch-drop:hover {
+            --text-color: var(--box-selected-active-text-color);
+            --text-secondary-color: var(--box-selected-active-text-color);
+
+            color: var(--text-color);
+            background-color: var(--box-selected-active-background-color);
+            cursor: copy;
+          }
+        }
+      }
+    }
+
+    #commit-list {
+      :not(input):not(textarea),
+      :not(input):not(textarea)::after,
+      :not(input):not(textarea)::before {
+        cursor: default;
+      }
+    }
+
+    // 'squashing-enabled' class is due to feature flagging. If feature flag is
+    // removed, we could move .list-item block up under the #commit-list above
+    &.squashing-enabled {
+      #commit-list {
+        .list-item:not(.selected) {
+          .commit:hover {
+            --text-color: var(--box-selected-active-text-color);
+            --text-secondary-color: var(--box-selected-active-text-color);
+
+            color: var(--text-color);
+            background-color: var(--box-selected-active-background-color);
+          }
+
+          .commit {
+            div {
+              pointer-events: none;
+            }
+          }
+        }
+      }
+    }
   }
 }

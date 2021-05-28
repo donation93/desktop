@@ -27,6 +27,7 @@ import { isMergeHeadSet } from './merge'
 import { getBinaryPaths } from './diff'
 import { getRebaseInternalState } from './rebase'
 import { RebaseInternalState } from '../../models/rebase'
+import { isCherryPickHeadFound } from './cherry-pick'
 
 /**
  * V8 has a limit on the size of string it can create (~256MB), and unless we want to
@@ -60,6 +61,9 @@ export interface IStatusResult {
 
   /** details about the rebase operation, if found */
   readonly rebaseInternalState: RebaseInternalState | null
+
+  /** true if repository is in cherry pick state */
+  readonly isCherryPickingHeadFound: boolean
 
   /** the absolute path to the repository's working directory */
   readonly workingDirectory: WorkingDirectoryStatus
@@ -178,18 +182,14 @@ export async function getStatus(
 
   if (result.exitCode === 128) {
     log.debug(
-      `'git status' returned 128 for '${
-        repository.path
-      }' and is likely missing its .git directory`
+      `'git status' returned 128 for '${repository.path}' and is likely missing its .git directory`
     )
     return null
   }
 
   if (result.output.length > MaxStatusBufferSize) {
     log.error(
-      `'git status' emitted ${
-        result.output.length
-      } bytes, which is beyond the supported threshold of ${MaxStatusBufferSize} bytes`
+      `'git status' emitted ${result.output.length} bytes, which is beyond the supported threshold of ${MaxStatusBufferSize} bytes`
     )
     return null
   }
@@ -233,6 +233,8 @@ export async function getStatus(
 
   const workingDirectory = WorkingDirectoryStatus.fromFiles([...files.values()])
 
+  const isCherryPickingHeadFound = await isCherryPickHeadFound(repository)
+
   return {
     currentBranch,
     currentTip,
@@ -242,6 +244,7 @@ export async function getStatus(
     mergeHeadFound,
     rebaseInternalState,
     workingDirectory,
+    isCherryPickingHeadFound,
   }
 }
 
